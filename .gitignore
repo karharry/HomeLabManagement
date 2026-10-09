@@ -3,3 +3,8 @@ xcuserdata/
 *.xcworkspace/xcuserdata/
 .build/
 DerivedData/
+
+# Fully regenerated from project.yml by `xcodegen generate` — see README.
+# Tracking it alongside project.yml risks exactly the staleness that caused
+# the missing Hardened Runtime setting on the widget target.
+*.xcodeproj/
