@@ -51,6 +51,42 @@ targets:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
         com.apple.security.application-groups: [$(TeamIdentifierPrefix)group.com.karharry.homelabmanagement]
+  # Public-release variant: no App Sandbox, no App Groups, no embedded widget. Any entitlement
+  # (sandbox included) needs a provisioning profile tied to a paid Developer Program team to work on
+  # a machine other than the one it was built on — plain zero-entitlement ad-hoc signing has no such
+  # requirement, so this is what makes a free, "just works for anyone" release possible. The widget
+  # needs App Groups to share data with the app, so it's necessarily absent from this build; the
+  # regular HomeLabManagement target above (built locally via Xcode) is unaffected and keeps it.
+  HomeLabManagementDist:
+    type: application
+    platform: macOS
+    sources: [App, Shared]
+    dependencies:
+      - package: Citadel
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.karharry.homelabmanagement
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: YES
+        DEVELOPMENT_TEAM: ""
+    info:
+      path: App/InfoDist.plist
+      properties:
+        CFBundleName: HomeLab Management
+        CFBundleDisplayName: HomeLab Management
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.utilities
+        LSUIElement: false
+        CFBundleURLTypes:
+          - CFBundleURLSchemes: [homelabmanagement]
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
   HomeLabWidgets:
     type: app-extension
     platform: macOS
