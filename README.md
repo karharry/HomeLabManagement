@@ -4,6 +4,13 @@ A native macOS app for monitoring and managing a home lab: TrueNAS SCALE, Linux
 (Debian/Ubuntu, Raspberry Pi OS, Arch), Windows, and other Macs — all from one
 sidebar, with widgets for your desktop.
 
+> **Project status:** This is a personal tool I built for my own home lab and
+> am sharing as-is, in case it's useful to someone else. I have a full-time
+> job with long hours and frequent travel, so please don't expect support,
+> frequent updates, or timely responses to issues or pull requests. It works
+> for my own setup; your mileage may vary. Forks and PRs are welcome if you
+> want to extend it yourself, but I can't commit to maintaining it actively.
+
 ## Features
 
 - **Unified dashboard** across every machine kind, with a sidebar switcher and an
