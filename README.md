@@ -1,8 +1,10 @@
 # HomeLab Management
 
-A native macOS app for monitoring and managing a home lab: TrueNAS SCALE, Linux
-(Debian/Ubuntu, Raspberry Pi OS, Arch), Windows, and other Macs — all from one
-sidebar, with widgets for your desktop.
+A native app — for **macOS** and **Windows** — for monitoring and managing a home
+lab: TrueNAS SCALE, Linux (Debian/Ubuntu, Raspberry Pi OS, Arch), Windows, and
+Mac machines, all from one sidebar. Both builds manage the same set of machine
+kinds and share the same feature set; pick whichever runs on the computer you
+want the app itself to live on.
 
 > **Project status:** This is a personal tool I built for my own home lab and
 > am sharing as-is, in case it's useful to someone else. I have a full-time
@@ -10,6 +12,20 @@ sidebar, with widgets for your desktop.
 > frequent updates, or timely responses to issues or pull requests. It works
 > for my own setup; your mileage may vary. Forks and PRs are welcome if you
 > want to extend it yourself, but I can't commit to maintaining it actively.
+
+## Which build do I want?
+
+| | macOS app | Windows app |
+|---|---|---|
+| Location | [`App/`](App), [`Shared/`](Shared), [`Widgets/`](Widgets) | [`Windows/`](Windows) |
+| Built with | Swift / SwiftUI | Python / PySide6 |
+| Install | Homebrew cask, or a signed `.app` | Single portable `.exe`, no installer |
+| Desktop widgets | Yes (WidgetKit) | No direct equivalent — a system tray icon shows status instead |
+| Credential storage | macOS Keychain | Plain-text `settings.json` beside the exe |
+
+Everything else — which machine kinds you can add, what each one's pages show,
+VPN/fan-control/console/etc. — is the same app design, independently
+implemented per platform. Both are covered below.
 
 ## Features
 
@@ -31,25 +47,38 @@ sidebar, with widgets for your desktop.
   ProtonVPN CLI assist on Linux — works with any provider that exports a
   standard WireGuard config (ProtonVPN, Mullvad, etc.)
 - **RDP / Screen Sharing** quick-connect for Windows and Mac targets
-- **WidgetKit widgets**: a selected-machine status widget and an all-machines
-  overview widget for your desktop
-- **Open at Login** / **Open Minimized** options
+- **Desktop widgets** on macOS (WidgetKit: a selected-machine status widget and
+  an all-machines overview widget); the Windows build shows the same
+  at-a-glance status from a **system tray icon** instead, since Windows has no
+  WidgetKit equivalent
+- **Open at Login** / **Open Minimized** options on both platforms
 
 ## Installation
 
-### Homebrew (recommended)
+### macOS
+
+**Homebrew (recommended):**
 
 ```bash
 brew tap karharry/homelabmanagement
 brew install --cask homelabmanagement
 ```
 
-### Manual
+**Manual:** download the latest macOS release from the
+[Releases](../../releases) page, unzip, and move `HomeLab Management.app` to
+`/Applications`.
 
-Download the latest release from the [Releases](../../releases) page, unzip,
-and move `HomeLab Management.app` to `/Applications`.
+### Windows
+
+Download `HomeLabManagement.exe` from the [Releases](../../releases) page and
+run it — it's a single portable file with no installer and no extra runtime
+to install. Copy it anywhere (including a USB stick or another PC) and it
+keeps working; a `settings.json` file is created next to it on first use to
+hold your machine list and credentials.
 
 ## Building from source
+
+### macOS
 
 Requires Xcode 16+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
@@ -61,15 +90,32 @@ open HomeLabManagement.xcodeproj
 The project uses [Citadel](https://github.com/orlandos-nl/Citadel) for SSH,
 resolved automatically via Swift Package Manager on first build.
 
+### Windows
+
+Requires Python 3.11+. From the [`Windows/`](Windows) directory:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+.\.venv\Scripts\python app.py        # run from source
+.\build.ps1                          # or build dist\HomeLabManagement.exe
+```
+
+See [`Windows/README.md`](Windows/README.md) for more on the Windows build's
+architecture.
+
 ## How it works
 
 Most machine kinds are managed over SSH (POSIX shell for Linux/macOS,
 PowerShell for Windows), with small scripts collecting system state in a
 single round trip. TrueNAS is managed natively over its JSON-RPC-over-WebSocket
 API, with SSH as an optional add-on for VM stats, containers, and the console.
-All credentials are stored in the macOS Keychain; machine configuration (host,
-port, kind) is stored in standard app preferences — nothing is sent anywhere
-except directly to the machines you add.
+Machine configuration (host, port, kind) and credentials are stored locally —
+in the macOS Keychain + standard app preferences on the Mac build, in a
+`settings.json` file beside the exe on the Windows build (there's no Windows
+equivalent of the Keychain, so this is a deliberate, simpler trade-off for a
+portable single-file app) — nothing is sent anywhere except directly to the
+machines you add.
 
 ## License
 
