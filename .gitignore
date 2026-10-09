@@ -2,6 +2,7 @@
 xcuserdata/
 *.xcworkspace/xcuserdata/
 .build/
+build/
 DerivedData/
 
 # Fully regenerated from project.yml by `xcodegen generate` — see README.
