@@ -7,13 +7,14 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget,
                                  QTreeWidgetItem, QStackedWidget, QToolBar, QPushButton, QLabel,
                                  QMessageBox, QMenu, QApplication)
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QColor
 
-from core import NavItem, MachineKind
+from core import NavItem, MachineKind, NAV_GROUP_OF
 from app_model import AppModel
 from overview_page import OverviewPage
 from machine_editor import MachineEditor
 import remote_desktop
+import theme
 
 from pages_core import DashboardPage, StoragePage, ProcessesPage, ServicesPage, AlertsPage
 from pages_shared_extra import ConsolePage, UsersPage, LogsPage, UpdatesPage
@@ -22,7 +23,7 @@ from pages_truenas_extra import (TrueNASDatasetsPage, TrueNASSharesPage, TrueNAS
                                    TrueNASDataProtectionPage, TrueNASUpdatesPage, TrueNASUsersPage)
 from pages_truenas_vpn import TrueNASVPNPage
 from pages_truenas_fan import TrueNASFanPage
-from pages_linux_extra import PiholePage, PiKVMPage, TailscalePage
+from pages_linux_extra import PiholePage, PiKVMPage, TailscalePage, LinuxVMsPage
 from pages_linux_tasks import RaspberryPiPage, LinuxScheduledTasksPage
 from pages_windows import WindowsCPUPage, WindowsGPUPage, WindowsSensorsPage
 from pages_windows_extra import (WindowsStartupPage, WindowsScheduledTasksPage, WindowsSoftwarePage,
@@ -53,7 +54,7 @@ def build_page(nav: NavItem, session) -> QWidget:
     if nav == NavItem.apps:
         return TrueNASAppsPage(session)
     if nav == NavItem.vms:
-        return TrueNASVMsPage(session)
+        return TrueNASVMsPage(session) if kind == MachineKind.truenas else LinuxVMsPage(session)
     if nav == NavItem.containers:
         return TrueNASContainersPage(session) if kind == MachineKind.truenas else ContainersPage(session)
     if nav == NavItem.fan:
@@ -166,6 +167,10 @@ class MainWindow(QMainWindow):
 
         model.machines_changed.connect(self.rebuild_sidebar)
         model.selection_changed.connect(self._on_selection_changed)
+        # Group headers in the sidebar bake in a theme color (setForeground isn't palette-driven
+        # like the rest of the tree, which just inherits QApplication's palette automatically) —
+        # rebuild on a theme change so they don't go stale when the OS light/dark setting flips.
+        theme.ThemeManager.instance().changed.connect(self.rebuild_sidebar)
         self._connected_sessions: set[str] = set()
 
         self.rebuild_sidebar()
@@ -187,7 +192,12 @@ class MainWindow(QMainWindow):
             m_item.setData(0, ROLE_MACHINE_ID, s.id)
             self.tree.addTopLevelItem(m_item)
             if s.id == self.model.selected_id:
+                last_group = None
                 for nav in s.nav_items:
+                    group = NAV_GROUP_OF.get(nav)
+                    if group is not None and group != last_group:
+                        m_item.addChild(self._group_header(group))
+                    last_group = group
                     nav_item = QTreeWidgetItem([self._nav_label(s, nav)])
                     nav_item.setData(0, ROLE_KIND, "nav")
                     nav_item.setData(0, ROLE_MACHINE_ID, s.id)
@@ -209,6 +219,19 @@ class MainWindow(QMainWindow):
         if nav == NavItem.alerts and s.alerts:
             return f"{nav.value} ({len(s.alerts)})"
         return nav.value
+
+    def _group_header(self, group: str) -> QTreeWidgetItem:
+        """A non-interactive sidebar row labeling the group of nav items that follows it
+        (Hardware/Software/Network/Data/System) — Dashboard and Alerts stay ungrouped."""
+        item = QTreeWidgetItem([group.upper()])
+        item.setData(0, ROLE_KIND, "navgroup")
+        item.setFlags(Qt.ItemIsEnabled)  # not selectable, not clickable
+        f = item.font(0)
+        f.setBold(True)
+        f.setPointSize(max(9, f.pointSize() - 1))
+        item.setFont(0, f)
+        item.setForeground(0, QColor(theme.current().text_secondary))
+        return item
 
     def _item_clicked(self, item: QTreeWidgetItem, column: int):
         kind = item.data(0, ROLE_KIND)

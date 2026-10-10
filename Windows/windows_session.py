@@ -7,6 +7,7 @@ part of this app most sensitive to subtle behavioral drift.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -14,7 +15,7 @@ from typing import Optional
 
 import requests
 
-from core import Machine, MachineStore, NavItem, ConnectionState, StorageItem, ServiceRow, ProcessRow, Fmt
+from core import Machine, MachineStore, NavItem, ConnectionState, StorageItem, ServiceRow, ProcessRow, Fmt, sort_nav_items
 from machine_session import MachineSession
 from ssh_runner import SSHRunner, SSHSettings, pq
 from wireguard_ import tunnels as wg_tunnels, is_valid_name as wg_valid_name
@@ -283,7 +284,7 @@ def action_script(body: str) -> str:
 
 STARTUP_SCRIPT = PRELUDE + r"""
 $ap='\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\'
-function Dis($path,$name){$v=Get-ItemPropertyValue -LiteralPath $path -Name $name -ErrorAction SilentlyContinue;[bool]($v -and ($v[0] -band 1))}
+function Dis($path,$name){try{$v=Get-ItemPropertyValue -LiteralPath $path -Name $name -ErrorAction Stop}catch{$v=$null};[bool]($v -and ($v[0] -band 1))}
 function Exe($c){$c=[Environment]::ExpandEnvironmentVariables($c);if($c -match '^\s*"([^"]+)"'){$matches[1]}elseif($c -match '^\s*(.+?\.(exe|bat|cmd|com|lnk|msc))'){$matches[1]}else{($c.Trim() -split ' ')[0]}}
 function Pub($c){$p=Exe $c;if($p -and (Test-Path -LiteralPath $p)){$i=(Get-Item -LiteralPath $p).VersionInfo;if($i.CompanyName){$i.CompanyName.Trim()}elseif($i.ProductName){$i.ProductName.Trim()}}}
 $o=@()
@@ -402,13 +403,18 @@ def _rows(text: Optional[str]) -> list[dict]:
 def _num(r: dict, k: str) -> Optional[float]:
     v = r.get(k)
     if isinstance(v, (int, float)):
-        return float(v)
-    if isinstance(v, str):
+        v = float(v)
+    elif isinstance(v, str):
         try:
-            return float(v)
+            v = float(v)
         except ValueError:
             return None
-    return None
+    else:
+        return None
+    # A handful of WMI/sensor counters can legitimately come back NaN or +/-Inf (e.g. a percentage
+    # computed over a zero denominator) — treat that the same as "no reading" rather than letting
+    # "nan"/"inf" leak into a formatted label.
+    return v if math.isfinite(v) else None
 
 
 def _str(r: dict, k: str) -> Optional[str]:
@@ -466,10 +472,19 @@ def _lhm_sensors(data: bytes) -> list[HWSensor]:
             parts = sensor_id.split("/")
             if len(parts) >= 2:
                 type_ = _LHM_TYPE_NAMES.get(parts[-2].lower())
-                val_str = (n.get("Value") or "").split(" ")[0]
+                # LHM's Remote Web Server formats "Value" using the host machine's own locale, so on
+                # any non-US-English Windows install this is "0,702 V" / "1,3 W" (comma decimal) —
+                # float() rejects that outright, which silently dropped every single sensor on a
+                # European-locale box rather than erroring loudly.
+                val_str = (n.get("Value") or "").split(" ")[0].replace(",", ".")
                 try:
                     v = float(val_str)
                 except ValueError:
+                    v = None
+                # LHM itself sometimes reports a literal "NaN" (e.g. Network Utilization with no
+                # active interface data) — float("NaN") parses fine rather than raising, so it needs
+                # an explicit isfinite check or it renders as a literal "nan%" in the UI.
+                if v is not None and not math.isfinite(v):
                     v = None
                 if type_ and v is not None:
                     out.append(HWSensor(name=n.get("Text") or sensor_id, type=type_, value=v, identifier=sensor_id))
@@ -661,10 +676,10 @@ class WindowsSession(MachineSession):
 
     @property
     def nav_items(self):
-        items = list(self.machine.kind.nav_items)
-        if self.has_wireguard and NavItem.alerts in items:
-            items.insert(items.index(NavItem.alerts), NavItem.vpn)
-        return items
+        items = set(self.machine.kind.nav_items)
+        if self.has_wireguard:
+            items.add(NavItem.vpn)
+        return sort_nav_items(items)
 
     def _ssh(self) -> SSHSettings:
         return SSHSettings(host=self.machine.host, port=self.machine.port, user=self.machine.user,
@@ -780,6 +795,13 @@ class WindowsSession(MachineSession):
             hist = self.gpu_history.setdefault(g.id, GPUHistory())
             self.push(hist.util, g.util)
             self.push(hist.vram, (g.vram_fraction * 100) if g.vram_fraction is not None else None)
+
+        # Total power: sums every "Power" sensor LibreHardwareMonitor reports (CPU package, GPU,
+        # sometimes more) — not true wall power, but the closest estimate available without a
+        # physical meter. None (not 0) when no Power sensor is reported at all, so the Dashboard can
+        # tell "no data" apart from "genuinely idle".
+        power_sensors = [s.value for s in self.sensors if s.type == "Power"]
+        self.power_watts = sum(power_sensors) if power_sensors else None
 
         self.state = ConnectionState(ConnectionState.CONNECTED)
         self.last_refresh = time.time()
@@ -977,6 +999,7 @@ class WindowsSession(MachineSession):
         self.submit(do, "users")
 
     def run_console(self, command: str, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             try:
                 out = self._runner.ps(action_script(command), self._ssh())
@@ -1003,6 +1026,7 @@ class WindowsSession(MachineSession):
         self.submit(do, "wireguard")
 
     def add_wireguard_tunnel(self, name: str, config: str, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             if not wg_valid_name(name):
                 on_done("Use letters, numbers, dashes and underscores only.")

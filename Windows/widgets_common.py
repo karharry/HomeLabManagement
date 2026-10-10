@@ -7,6 +7,7 @@ once `theme.apply_theme()` re-polishes the app.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Optional
 
 from PySide6.QtCore import Qt, QPointF
@@ -15,6 +16,22 @@ from PySide6.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel
                                  QSizePolicy)
 
 import theme
+
+
+@contextmanager
+def preserve_scroll(list_widget):
+    """Use as `with preserve_scroll(self.list): self.list.clear(); ...repopulate...`.
+
+    QListWidget/QTableWidget's clear() resets the viewport scroll position to the top, which is
+    jarring on the many pages here that periodically clear-and-rebuild their list on every poll —
+    the user loses their scroll position every few seconds while reading further down a long list
+    (e.g. TrueNAS Apps, Windows Sensors)."""
+    bar = list_widget.verticalScrollBar()
+    pos = bar.value()
+    try:
+        yield
+    finally:
+        bar.setValue(min(pos, bar.maximum()))
 
 # Status-semantic colors (Apple system-color equivalents): kept fixed across themes since they're
 # chosen to read clearly on both light and dark backgrounds, unlike plain gray/accent text.

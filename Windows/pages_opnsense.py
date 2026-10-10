@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QL
                                  QWidget, QLineEdit, QPushButton, QMessageBox)
 
 from page_base import SessionPage
+from widgets_common import preserve_scroll
 
 
 class OPNsenseNetworkPage(SessionPage):
@@ -20,13 +21,14 @@ class OPNsenseNetworkPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        if not self.session.interfaces:
-            self.list.addItem("No interfaces reported.")
-            return
-        for i in self.session.interfaces:
-            addr = ", ".join(i.addresses) if i.addresses else "No address"
-            self.list.addItem(("● " if i.is_up else "○ ") + f"{i.name} ({i.device})\n{i.status} · {addr}")
+        with preserve_scroll(self.list):
+            self.list.clear()
+            if not self.session.interfaces:
+                self.list.addItem("No interfaces reported.")
+                return
+            for i in self.session.interfaces:
+                addr = ", ".join(i.addresses) if i.addresses else "No address"
+                self.list.addItem(("● " if i.is_up else "○ ") + f"{i.name} ({i.device})\n{i.status} · {addr}")
 
 
 class OPNsenseDHCPPage(SessionPage):
@@ -45,14 +47,15 @@ class OPNsenseDHCPPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        leases = self.session.dhcp_leases
-        if not leases:
-            self.list.addItem("No active DHCP leases.")
-            return
-        for l in leases:
-            self.list.addItem(f"{l.ip}  —  {l.hostname}\n{l.mac} · {l.interface}"
-                               + (f" · {l.state}" if l.state else ""))
+        with preserve_scroll(self.list):
+            self.list.clear()
+            leases = self.session.dhcp_leases
+            if not leases:
+                self.list.addItem("No active DHCP leases.")
+                return
+            for l in leases:
+                self.list.addItem(f"{l.ip}  —  {l.hostname}\n{l.mac} · {l.interface}"
+                                   + (f" · {l.state}" if l.state else ""))
 
 
 class OPNsenseStaticHostsPage(SessionPage):
@@ -99,30 +102,31 @@ class OPNsenseStaticHostsPage(SessionPage):
 
     def _refresh(self):
         self.error_label.setText(self.session.dnsmasq_hosts_error or "")
-        self.list.clear()
-        hosts = self.session.dnsmasq_hosts
-        if not hosts:
-            self.list.addItem("No static hosts configured.")
-            return
-        for h in hosts:
-            item = QListWidgetItem()
-            w = QWidget()
-            lay = QHBoxLayout(w)
-            lay.setContentsMargins(4, 2, 4, 2)
-            fqdn = f"{h.host}.{h.domain}" if h.domain else h.host
-            detail_bits = [b for b in (h.mac, h.descr) if b]
-            label = f"{fqdn}  →  {h.ip}" + (f"\n{' · '.join(detail_bits)}" if detail_bits else "")
-            label_widget = QLabel(label)
-            label_widget.setWordWrap(True)
-            lay.addWidget(label_widget, 1)
-            remove_btn = QPushButton("Remove")
-            remove_btn.clicked.connect(lambda _, hh=h: self._confirm_remove(hh))
-            lay.addWidget(remove_btn)
-            self.list.addItem(item)
-            self.list.setItemWidget(item, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            item.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            hosts = self.session.dnsmasq_hosts
+            if not hosts:
+                self.list.addItem("No static hosts configured.")
+                return
+            for h in hosts:
+                item = QListWidgetItem()
+                w = QWidget()
+                lay = QHBoxLayout(w)
+                lay.setContentsMargins(4, 2, 4, 2)
+                fqdn = f"{h.host}.{h.domain}" if h.domain else h.host
+                detail_bits = [b for b in (h.mac, h.descr) if b]
+                label = f"{fqdn}  →  {h.ip}" + (f"\n{' · '.join(detail_bits)}" if detail_bits else "")
+                label_widget = QLabel(label)
+                label_widget.setWordWrap(True)
+                lay.addWidget(label_widget, 1)
+                remove_btn = QPushButton("Remove")
+                remove_btn.clicked.connect(lambda _, hh=h: self._confirm_remove(hh))
+                lay.addWidget(remove_btn)
+                self.list.addItem(item)
+                self.list.setItemWidget(item, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                item.setSizeHint(_hint)
 
     def _add(self):
         host, ip = self.host_edit.text().strip(), self.ip_edit.text().strip()

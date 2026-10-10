@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QLi
 
 from core import Fmt
 from page_base import SessionPage
+from widgets_common import preserve_scroll
 
 
 class TrueNASDatasetsPage(SessionPage):
@@ -27,17 +28,19 @@ class TrueNASDatasetsPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.datasets_list.clear()
-        if not self.session.datasets:
-            self.datasets_list.addItem("No data yet")
-        for d in self.session.datasets:
-            detail = " · ".join(x for x in [d.type, d.mountpoint] if x)
-            self.datasets_list.addItem(f"{d.name}  —  {Fmt.bytes(d.used)}\n{detail}")
-        self.snaps_list.clear()
-        if not self.session.snapshots:
-            self.snaps_list.addItem("No snapshots")
-        for s in self.session.snapshots[:200]:
-            self.snaps_list.addItem(f"{s.name}  —  {Fmt.bytes(s.used)}\n{s.dataset}")
+        with preserve_scroll(self.datasets_list):
+            self.datasets_list.clear()
+            if not self.session.datasets:
+                self.datasets_list.addItem("No data yet")
+            for d in self.session.datasets:
+                detail = " · ".join(x for x in [d.type, d.mountpoint] if x)
+                self.datasets_list.addItem(f"{d.name}  —  {Fmt.bytes(d.used)}\n{detail}")
+        with preserve_scroll(self.snaps_list):
+            self.snaps_list.clear()
+            if not self.session.snapshots:
+                self.snaps_list.addItem("No snapshots")
+            for s in self.session.snapshots[:200]:
+                self.snaps_list.addItem(f"{s.name}  —  {Fmt.bytes(s.used)}\n{s.dataset}")
 
 
 class TrueNASSharesPage(SessionPage):
@@ -53,14 +56,15 @@ class TrueNASSharesPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        if not self.session.shares:
-            self.list.addItem("No shares configured")
-            return
-        for s in self.session.shares:
-            name = s.name or s.path
-            detail = " · ".join(x for x in [s.path, s.comment] if x)
-            self.list.addItem(f"[{s.kind}] {name} {'(enabled)' if s.enabled else '(disabled)'}\n{detail}")
+        with preserve_scroll(self.list):
+            self.list.clear()
+            if not self.session.shares:
+                self.list.addItem("No shares configured")
+                return
+            for s in self.session.shares:
+                name = s.name or s.path
+                detail = " · ".join(x for x in [s.path, s.comment] if x)
+                self.list.addItem(f"[{s.kind}] {name} {'(enabled)' if s.enabled else '(disabled)'}\n{detail}")
 
 
 class TrueNASNetworkPage(SessionPage):
@@ -76,11 +80,12 @@ class TrueNASNetworkPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        for i in self.session.interfaces:
-            up = i.link_state.upper() == "LINK_STATE_UP"
-            addr = ", ".join(i.addresses) if i.addresses else "No address"
-            self.list.addItem(f"{'●' if up else '○'} {i.name}\n{addr}")
+        with preserve_scroll(self.list):
+            self.list.clear()
+            for i in self.session.interfaces:
+                up = i.link_state.upper() == "LINK_STATE_UP"
+                addr = ", ".join(i.addresses) if i.addresses else "No address"
+                self.list.addItem(f"{'●' if up else '○'} {i.name}\n{addr}")
 
 
 class TrueNASDataProtectionPage(SessionPage):
@@ -96,19 +101,20 @@ class TrueNASDataProtectionPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        tasks = self.session.protection_tasks
-        if not tasks:
-            self.list.addItem("Nothing configured — no snapshot tasks, replication, rsync, cloud sync or "
-                               "cron jobs found.")
-            return
-        groups: dict[str, list] = {}
-        for t in tasks:
-            groups.setdefault(t.kind, []).append(t)
-        for kind in sorted(groups):
-            self.list.addItem(f"— {kind} —")
-            for t in groups[kind]:
-                self.list.addItem(("● " if t.enabled else "○ ") + t.summary)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            tasks = self.session.protection_tasks
+            if not tasks:
+                self.list.addItem("Nothing configured — no snapshot tasks, replication, rsync, cloud sync or "
+                                   "cron jobs found.")
+                return
+            groups: dict[str, list] = {}
+            for t in tasks:
+                groups.setdefault(t.kind, []).append(t)
+            for kind in sorted(groups):
+                self.list.addItem(f"— {kind} —")
+                for t in groups[kind]:
+                    self.list.addItem(("● " if t.enabled else "○ ") + t.summary)
 
 
 class TrueNASUpdatesPage(SessionPage):
@@ -145,8 +151,9 @@ class TrueNASUsersPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        for u in self.session.user_accounts:
-            lock = "\U0001f512 " if u.locked else ""
-            detail = " · ".join(x for x in [u.full_name, f"uid {u.uid}"] if x)
-            self.list.addItem(f"{lock}{u.username}\n{detail}")
+        with preserve_scroll(self.list):
+            self.list.clear()
+            for u in self.session.user_accounts:
+                lock = "\U0001f512 " if u.locked else ""
+                detail = " · ".join(x for x in [u.full_name, f"uid {u.uid}"] if x)
+                self.list.addItem(f"{lock}{u.username}\n{detail}")

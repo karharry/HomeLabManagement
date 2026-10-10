@@ -81,25 +81,30 @@ class MachineKind(str, Enum):
 
     @property
     def nav_items(self) -> list["NavItem"]:
+        # Membership only — sort_nav_items() (see below) places these in the canonical cross-kind
+        # order/grouping, so what matters here is just which pages this kind has, not what order
+        # they're written in.
         if self == MachineKind.truenas:
-            return [NavItem.dashboard, NavItem.storage, NavItem.datasets, NavItem.shares, NavItem.network,
-                    NavItem.apps, NavItem.vms, NavItem.containers, NavItem.services, NavItem.data_protection,
-                    NavItem.fan, NavItem.updates, NavItem.users, NavItem.console, NavItem.alerts]
-        if self == MachineKind.windows:
-            return [NavItem.dashboard, NavItem.storage, NavItem.cpu, NavItem.gpu, NavItem.sensors,
-                    NavItem.processes, NavItem.services, NavItem.startup, NavItem.scheduled_tasks,
-                    NavItem.software, NavItem.updates, NavItem.logs, NavItem.users, NavItem.console,
-                    NavItem.alerts]
-        if self == MachineKind.macos:
-            return [NavItem.dashboard, NavItem.storage, NavItem.power, NavItem.processes, NavItem.services,
-                    NavItem.startup, NavItem.software, NavItem.updates, NavItem.logs, NavItem.users,
-                    NavItem.console, NavItem.alerts]
-        if self == MachineKind.opnsense:
-            return [NavItem.dashboard, NavItem.storage, NavItem.network, NavItem.services,
-                    NavItem.dhcp_leases, NavItem.dnsmasq_hosts, NavItem.updates, NavItem.alerts]
-        return [NavItem.dashboard, NavItem.storage, NavItem.processes, NavItem.services,
-                NavItem.scheduled_tasks, NavItem.updates, NavItem.logs, NavItem.users, NavItem.console,
-                NavItem.alerts]
+            items = {NavItem.dashboard, NavItem.storage, NavItem.datasets, NavItem.shares, NavItem.network,
+                     NavItem.apps, NavItem.vms, NavItem.containers, NavItem.services, NavItem.data_protection,
+                     NavItem.fan, NavItem.updates, NavItem.users, NavItem.console, NavItem.alerts}
+        elif self == MachineKind.windows:
+            items = {NavItem.dashboard, NavItem.storage, NavItem.cpu, NavItem.gpu, NavItem.sensors,
+                     NavItem.processes, NavItem.services, NavItem.startup, NavItem.scheduled_tasks,
+                     NavItem.software, NavItem.updates, NavItem.logs, NavItem.users, NavItem.console,
+                     NavItem.alerts}
+        elif self == MachineKind.macos:
+            items = {NavItem.dashboard, NavItem.storage, NavItem.power, NavItem.processes, NavItem.services,
+                     NavItem.startup, NavItem.software, NavItem.updates, NavItem.logs, NavItem.users,
+                     NavItem.console, NavItem.alerts}
+        elif self == MachineKind.opnsense:
+            items = {NavItem.dashboard, NavItem.storage, NavItem.network, NavItem.services,
+                     NavItem.dhcp_leases, NavItem.dnsmasq_hosts, NavItem.updates, NavItem.alerts}
+        else:
+            items = {NavItem.dashboard, NavItem.storage, NavItem.processes, NavItem.services,
+                      NavItem.scheduled_tasks, NavItem.updates, NavItem.logs, NavItem.users, NavItem.console,
+                      NavItem.alerts}
+        return sort_nav_items(items)
 
 
 ALL_KINDS = [MachineKind.truenas, MachineKind.debian, MachineKind.raspios, MachineKind.arch,
@@ -153,6 +158,36 @@ class NavItem(str, Enum):
             NavItem.data_protection: "lock", NavItem.raspberry_pi: "cpu", NavItem.vpn: "lock",
             NavItem.dhcp_leases: "network", NavItem.local_dns: "folder", NavItem.dnsmasq_hosts: "folder",
         }[self]
+
+
+# Canonical sidebar grouping/order: every machine kind's nav_items is a *subset* of this, always in
+# this relative order, so the sidebar reads the same way across every machine kind instead of each
+# kind inventing its own ad-hoc ordering. Dashboard and Alerts stay ungrouped (pinned first/last —
+# the "glance at this first/last" pages); everything else groups by subject matter. A kind that has
+# none of a group's items simply doesn't show that group's header.
+NAV_GROUPS: list[tuple[Optional[str], list["NavItem"]]] = [
+    (None, [NavItem.dashboard]),
+    ("Hardware", [NavItem.storage, NavItem.cpu, NavItem.gpu, NavItem.sensors, NavItem.power,
+                  NavItem.fan, NavItem.raspberry_pi]),
+    ("Software", [NavItem.apps, NavItem.vms, NavItem.containers, NavItem.startup, NavItem.software,
+                  NavItem.scheduled_tasks, NavItem.updates]),
+    ("Network", [NavItem.network, NavItem.dhcp_leases, NavItem.dnsmasq_hosts, NavItem.local_dns,
+                 NavItem.pihole, NavItem.tailscale, NavItem.vpn, NavItem.pikvm]),
+    ("Data", [NavItem.datasets, NavItem.shares, NavItem.data_protection]),
+    ("System", [NavItem.processes, NavItem.services, NavItem.logs, NavItem.users, NavItem.console]),
+    (None, [NavItem.alerts]),
+]
+
+NAV_GROUP_OF: dict["NavItem", Optional[str]] = {n: g for g, items in NAV_GROUPS for n in items}
+NAV_ORDER: list["NavItem"] = [n for _, items in NAV_GROUPS for n in items]
+
+
+def sort_nav_items(items) -> list["NavItem"]:
+    """Orders a kind/session's available nav items by the canonical NAV_ORDER above. Every nav_items
+    property should build its available set in whatever order is convenient, then return
+    sort_nav_items(that set) as the last step, rather than hand-maintaining list positions."""
+    s = set(items)
+    return [n for n in NAV_ORDER if n in s]
 
 
 # ----------------------------------------------------------------------------

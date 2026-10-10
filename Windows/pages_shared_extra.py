@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
                                  QListWidget, QListWidgetItem, QTextEdit, QScrollArea, QWidget)
 
 from page_base import SessionPage
+from widgets_common import preserve_scroll
 
 
 class ConsolePage(SessionPage):
@@ -78,14 +79,15 @@ class UsersPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        users = self.session.users
-        if not users:
-            self.list.addItem("No active sessions — nobody appears to be logged in right now.")
-            return
-        for u in users:
-            detail = " · ".join(x for x in [u.terminal, u.host, u.loginTime] if x)
-            self.list.addItem(f"{u.name}\n{detail}")
+        with preserve_scroll(self.list):
+            self.list.clear()
+            users = self.session.users
+            if not users:
+                self.list.addItem("No active sessions — nobody appears to be logged in right now.")
+                return
+            for u in users:
+                detail = " · ".join(x for x in [u.terminal, u.host, u.loginTime] if x)
+                self.list.addItem(f"{u.name}\n{detail}")
 
 
 class LogsPage(SessionPage):
@@ -114,7 +116,8 @@ class LogsPage(SessionPage):
 
     def _on_updated(self, topic):
         if topic == "logs":
-            self.text.setPlainText("\n".join(self.session.log_lines))
+            with preserve_scroll(self.text):
+                self.text.setPlainText("\n".join(self.session.log_lines))
 
 
 class UpdatesPage(SessionPage):
@@ -139,25 +142,26 @@ class UpdatesPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
         updates = self.session.updates
         self.upgrade_btn.setEnabled(bool(updates))
-        if not getattr(self.session, "updates_checked", False):
-            self.list.addItem("Checking for updates…")
-            return
-        if not updates:
-            self.list.addItem("Up to date — no updates are pending.")
-            return
-        groups: dict[str, list] = {}
-        for u in updates:
-            groups.setdefault(u.source or "System", []).append(u)
-        for source in sorted(groups):
-            header = QListWidgetItem(f"— {source} —")
-            header.setFlags(header.flags() & ~1)  # not selectable-ish; keep simple
-            self.list.addItem(header)
-            for item in sorted(groups[source], key=lambda i: i.name.lower()):
-                label = f"{item.name}\n{item.newVersion}" + ("  [security]" if item.isSecurity else "")
-                self.list.addItem("    " + label)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            if not getattr(self.session, "updates_checked", False):
+                self.list.addItem("Checking for updates…")
+                return
+            if not updates:
+                self.list.addItem("Up to date — no updates are pending.")
+                return
+            groups: dict[str, list] = {}
+            for u in updates:
+                groups.setdefault(u.source or "System", []).append(u)
+            for source in sorted(groups):
+                header = QListWidgetItem(f"— {source} —")
+                header.setFlags(header.flags() & ~1)  # not selectable-ish; keep simple
+                self.list.addItem(header)
+                for item in sorted(groups[source], key=lambda i: i.name.lower()):
+                    label = f"{item.name}\n{item.newVersion}" + ("  [security]" if item.isSecurity else "")
+                    self.list.addItem("    " + label)
 
     def _upgrade(self):
         self.upgrade_btn.setEnabled(False)

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from core import Machine, MachineStore, NavItem, ConnectionState, StorageItem, ServiceRow, ProcessRow
+from core import Machine, MachineStore, NavItem, ConnectionState, StorageItem, ServiceRow, ProcessRow, sort_nav_items
 from machine_session import MachineSession
 from ssh_runner import SSHRunner, SSHSettings, quote
 import docker_
@@ -374,18 +374,14 @@ class MacSession(MachineSession):
 
     @property
     def nav_items(self):
-        items = list(self.machine.kind.nav_items)
-        if NavItem.alerts in items:
-            idx = items.index(NavItem.alerts)
-            extra = []
-            if self.has_docker:
-                extra.append(NavItem.containers)
-            if self.has_tailscale:
-                extra.append(NavItem.tailscale)
-            if self.has_wireguard:
-                extra.append(NavItem.vpn)
-            items[idx:idx] = extra
-        return items
+        items = set(self.machine.kind.nav_items)
+        if self.has_docker:
+            items.add(NavItem.containers)
+        if self.has_tailscale:
+            items.add(NavItem.tailscale)
+        if self.has_wireguard:
+            items.add(NavItem.vpn)
+        return sort_nav_items(items)
 
     def _ssh(self) -> SSHSettings:
         return SSHSettings(host=self.machine.host, port=self.machine.port, user=self.machine.user,
@@ -492,6 +488,7 @@ class MacSession(MachineSession):
         self.submit(do, "containers")
 
     def container_logs(self, c: docker_.DockerContainer, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             try:
                 out = self._container_collector.sh(f"docker logs --tail 300 {quote(c.name)}", self._ssh(), sudo=self.machine.useSudo, merge=True)
@@ -627,6 +624,7 @@ class MacSession(MachineSession):
         self.submit(do, "updates")
 
     def upgrade_all(self, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             try:
                 out = self._runner.sh("brew upgrade 2>&1", self._ssh(), sudo=False, merge=True)
@@ -681,6 +679,7 @@ class MacSession(MachineSession):
         self.submit(do, "wireguard")
 
     def add_wireguard_tunnel(self, name: str, config: str, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             if not wg_valid_name(name):
                 on_done("Use letters, numbers, dashes and underscores only.")
@@ -757,6 +756,7 @@ class MacSession(MachineSession):
         self.submit(do, "users")
 
     def run_console(self, command: str, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             try:
                 out = self._runner.sh(command, self._ssh(), sudo=True, merge=True)

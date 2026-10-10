@@ -208,34 +208,56 @@ class OPNsenseSession(MachineSession):
             return False
 
         self.host_name = _str(info, "hostname", "name") or self.machine.host
-        self.host_os = "OPNsense " + (_str(info, "versionstring", "product_version", "version") or "")
+        version = _str(info, "versionstring", "product_version", "version")
+        if not version and isinstance(info.get("versions"), list) and info["versions"]:
+            # Some versions drop the scalar version fields entirely and only expose a "versions"
+            # list like ["OPNsense 26.7.6_3-amd64", "FreeBSD 15.1-RELEASE-p4", "OpenSSL 3.5.9"] —
+            # the first entry already starts with "OPNsense ", so don't double-prefix it.
+            version = str(info["versions"][0])
+            self.host_os = version
+        else:
+            self.host_os = "OPNsense " + version
         uptime_val = _first(info, "uptime", "uptime_seconds")
         if isinstance(uptime_val, (int, float)):
             self.host_uptime = float(uptime_val)
         elif isinstance(uptime_val, str):
             self.host_uptime = _parse_uptime_string(uptime_val)
+        else:
+            self.host_uptime = None
 
         res = try_get("diagnostics/system/systemResources")
         cpu = _num(res, "cpu", "cpu_usage", "cpu_total", "load")
         if cpu is None and isinstance(res.get("cpu"), dict):
             cpu = _num(res["cpu"], "total", "used", "usage", "load")
-        if cpu is None:
+        need_uptime = self.host_uptime is None
+        if cpu is None or need_uptime:
             # systemResources doesn't carry CPU on every version (confirmed on at least one real
-            # box: it only had a "memory" key) — diagnostics/activity/getActivity is the
-            # non-streaming alternative (the live dashboard widget otherwise uses a websocket).
+            # box: it only had a "memory" key), and systemInformation doesn't always carry uptime
+            # either — diagnostics/activity/getActivity is the non-streaming alternative (the live
+            # dashboard widget otherwise uses a websocket).
             activity = try_get("diagnostics/activity/getActivity")
-            cpu = _num(activity, "cpu", "cpu_usage", "total")
-            if cpu is None and isinstance(activity.get("cpu"), dict):
-                cpu = _num(activity["cpu"], "total", "used", "usage", "user")
             if cpu is None:
-                top_rows = _rows(activity.get("top") if isinstance(activity, dict) else None)
-                if top_rows:
-                    # Some versions expose a process table instead of a single summary number;
-                    # "idle" process's own time share approximates overall idle, so 100-idle ~ busy.
-                    idle = next((_num(r, "pcpu", "percent") for r in top_rows
-                                 if _str(r, "command", "name").lower() in ("idle", "[idle]")), None)
-                    if idle is not None:
-                        cpu = max(0.0, 100 - idle)
+                cpu = _num(activity, "cpu", "cpu_usage", "total")
+                if cpu is None and isinstance(activity.get("cpu"), dict):
+                    cpu = _num(activity["cpu"], "total", "used", "usage", "user")
+                if cpu is None:
+                    top_rows = _rows(activity.get("top") if isinstance(activity, dict) else None)
+                    if top_rows:
+                        # Some versions expose a process table instead of a single summary number;
+                        # "idle" process's own time share approximates overall idle, so 100-idle ~ busy.
+                        idle = next((_num(r, "pcpu", "percent") for r in top_rows
+                                     if _str(r, "command", "name").lower() in ("idle", "[idle]")), None)
+                        if idle is not None:
+                            cpu = max(0.0, 100 - idle)
+            # Newest versions return no structured summary or process table at all — just `top`'s
+            # raw header lines (confirmed on a real 26.7.6 box) — parse those directly for whichever
+            # of CPU%/uptime is still missing.
+            if cpu is None or need_uptime:
+                act_uptime, act_cpu = _parse_activity_summary(activity)
+                if cpu is None:
+                    cpu = act_cpu
+                if need_uptime:
+                    self.host_uptime = act_uptime
             if cpu is None and activity:
                 diag_errors.append(f"diagnostics/activity/getActivity: no CPU % found — {_describe(activity)}")
         if cpu is not None:
@@ -243,6 +265,7 @@ class OPNsenseSession(MachineSession):
         elif res:
             diag_errors.append(f"diagnostics/system/systemResources: no CPU % found — {_describe(res)}")
         self.push(self.cpu_history, self.cpu_percent)
+        self.host_uptime = self.host_uptime or 0.0
 
         mem = res.get("memory") if isinstance(res.get("memory"), dict) else res
         mem_total = _num(mem, "total", "memory_total", "total_bytes")
@@ -406,6 +429,7 @@ class OPNsenseSession(MachineSession):
         self.submit(do, "dnsmasqhosts")
 
     def add_dnsmasq_host(self, host: str, ip: str, mac: str, domain: str, descr: str, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             host_t, ip_t = host.strip(), ip.strip()
             if not host_t or not ip_t:
@@ -435,6 +459,7 @@ class OPNsenseSession(MachineSession):
         self.submit(do, "dnsmasqhosts")
 
     def remove_dnsmasq_host(self, h: OPNDnsmasqHost, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             c = self._client()
             try:
@@ -525,6 +550,10 @@ def _parse_uptime_string(s: str) -> float:
     something like "3 days, 02:14:05" or "02:14:05") into seconds."""
     import re
     total = 0.0
+    m = re.search(r"(\d+)\+(\d{1,2}):(\d{2}):(\d{2})", s)  # BSD top's "D+HH:MM:SS" (e.g. "0+19:22:24")
+    if m:
+        d, h, mi, se = (int(x) for x in m.groups())
+        return d * 86400 + h * 3600 + mi * 60 + se
     m = re.search(r"(\d+)\s*day", s, re.IGNORECASE)
     if m:
         total += int(m.group(1)) * 86400
@@ -533,3 +562,28 @@ def _parse_uptime_string(s: str) -> float:
         h, mi, se = (int(x) for x in m.groups())
         total += h * 3600 + mi * 60 + se
     return total
+
+
+def _parse_activity_summary(activity: dict) -> tuple[Optional[float], Optional[float]]:
+    """Some OPNsense versions' diagnostics/activity/getActivity has no structured CPU/uptime field
+    at all — just `top`'s raw header lines, e.g.:
+      "last pid: 11190;  load averages: 0.27, 0.30, 0.30  up 0+19:22:24    23:43:39"
+      "CPU:  0.0% user,  0.0% nice,  0.2% system,  1.2% interrupt, 98.6% idle"
+    Returns (uptime_seconds, cpu_percent), either possibly None if its line wasn't found."""
+    import re
+    headers = activity.get("headers") if isinstance(activity, dict) else None
+    if not isinstance(headers, list):
+        return None, None
+    uptime = cpu = None
+    for line in headers:
+        if not isinstance(line, str):
+            continue
+        if uptime is None and " up " in line:
+            m = re.search(r"\bup\s+(.+?)(?:\s+\d{1,2}:\d{2}:\d{2}\s*$|$)", line)
+            if m:
+                uptime = _parse_uptime_string(m.group(1))
+        if cpu is None and line.strip().startswith("CPU:"):
+            m = re.search(r"([\d.]+)%\s*idle", line)
+            if m:
+                cpu = max(0.0, 100.0 - float(m.group(1)))
+    return uptime, cpu

@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QS
 
 from core import Fmt
 from page_base import SessionPage
-from widgets_common import Card, MeterCard, Sparkline, StatRow
+from widgets_common import Card, MeterCard, Sparkline, StatRow, preserve_scroll
 
 
 class WindowsCPUPage(SessionPage):
@@ -226,19 +226,20 @@ class WindowsSensorsPage(SessionPage):
 
     def _refresh(self):
         s = self.session
-        if not s.sensors:
-            self.note_label.setText(self._empty_description())
+        with preserve_scroll(self.list):
+            if not s.sensors:
+                self.note_label.setText(self._empty_description())
+                self.list.clear()
+                return
+            self.note_label.setText("")
             self.list.clear()
-            return
-        self.note_label.setText("")
-        self.list.clear()
-        groups: dict[str, list] = {}
-        for sensor in s.sensors:
-            groups.setdefault(sensor.type, []).append(sensor)
-        for g in sorted(groups):
-            self.list.addItem(f"— {g} —")
-            for sensor in sorted(groups[g], key=lambda x: x.name):
-                self.list.addItem(f"{sensor.name}: {sensor.formatted}")
+            groups: dict[str, list] = {}
+            for sensor in s.sensors:
+                groups.setdefault(sensor.type, []).append(sensor)
+            for g in sorted(groups):
+                self.list.addItem(f"— {g} —")
+                for sensor in sorted(groups[g], key=lambda x: x.name):
+                    self.list.addItem(f"{sensor.name}: {sensor.formatted}")
 
     def _empty_description(self) -> str:
         s = self.session

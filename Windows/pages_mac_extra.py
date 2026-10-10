@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QLis
                                  QAbstractItemView)
 
 from page_base import SessionPage
+from widgets_common import preserve_scroll
 
 
 class MacStartupPage(SessionPage):
@@ -21,29 +22,30 @@ class MacStartupPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        if not self.session.startup_loaded:
-            self.list.addItem("Loading startup items…")
-            return
-        if not self.session.startup_items:
-            self.list.addItem("No startup items found")
-            return
-        for item in self.session.startup_items:
-            row = QListWidgetItem()
-            w = QWidget()
-            h = QHBoxLayout(w)
-            dot = QLabel("⏸" if item.disabled else "✅")
-            h.addWidget(dot)
-            scope = "System" if item.domain == "system" else "User"
-            h.addWidget(QLabel(f"{item.label}\n{scope} · {item.scope}"), 1)
-            btn = QPushButton("Enable" if item.disabled else "Disable")
-            btn.clicked.connect(lambda _, it=item: self.session.set_startup_enabled(it, it.disabled))
-            h.addWidget(btn)
-            self.list.addItem(row)
-            self.list.setItemWidget(row, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            row.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            if not self.session.startup_loaded:
+                self.list.addItem("Loading startup items…")
+                return
+            if not self.session.startup_items:
+                self.list.addItem("No startup items found")
+                return
+            for item in self.session.startup_items:
+                row = QListWidgetItem()
+                w = QWidget()
+                h = QHBoxLayout(w)
+                dot = QLabel("⏸" if item.disabled else "✅")
+                h.addWidget(dot)
+                scope = "System" if item.domain == "system" else "User"
+                h.addWidget(QLabel(f"{item.label}\n{scope} · {item.scope}"), 1)
+                btn = QPushButton("Enable" if item.disabled else "Disable")
+                btn.clicked.connect(lambda _, it=item: self.session.set_startup_enabled(it, it.disabled))
+                h.addWidget(btn)
+                self.list.addItem(row)
+                self.list.setItemWidget(row, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                row.setSizeHint(_hint)
 
 
 class MacSoftwarePage(SessionPage):

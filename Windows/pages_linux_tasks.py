@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QLabel, QListWidget
 
 from core import Fmt
 from page_base import SessionPage
-from widgets_common import Card
+from widgets_common import Card, preserve_scroll
 
 
 class RaspberryPiPage(SessionPage):
@@ -46,11 +46,12 @@ class RaspberryPiPage(SessionPage):
             self.temp_value.setStyleSheet("color: orange;" if s.pi_temp >= 75 else "")
         if s.pi_clock_mhz is not None:
             self.clock_value.setText(Fmt.mhz(s.pi_clock_mhz))
-        self.throttle_list.clear()
-        if not s.pi_throttled:
-            self.throttle_list.addItem("✅ Nothing currently active")
-        for f in s.pi_throttled:
-            self.throttle_list.addItem(f"⚠ {f}")
+        with preserve_scroll(self.throttle_list):
+            self.throttle_list.clear()
+            if not s.pi_throttled:
+                self.throttle_list.addItem("✅ Nothing currently active")
+            for f in s.pi_throttled:
+                self.throttle_list.addItem(f"⚠ {f}")
 
 
 class LinuxScheduledTasksPage(SessionPage):
@@ -70,13 +71,15 @@ class LinuxScheduledTasksPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.cron_list.clear()
-        if not self.session.cron_jobs:
-            self.cron_list.addItem("No crontab entries for this user.")
-        for j in self.session.cron_jobs:
-            self.cron_list.addItem(j)
-        self.timer_list.clear()
-        if not self.session.timers:
-            self.timer_list.addItem("No active timers.")
-        for t in self.session.timers:
-            self.timer_list.addItem(t)
+        with preserve_scroll(self.cron_list):
+            self.cron_list.clear()
+            if not self.session.cron_jobs:
+                self.cron_list.addItem("No crontab entries for this user.")
+            for j in self.session.cron_jobs:
+                self.cron_list.addItem(j)
+        with preserve_scroll(self.timer_list):
+            self.timer_list.clear()
+            if not self.session.timers:
+                self.timer_list.addItem("No active timers.")
+            for t in self.session.timers:
+                self.timer_list.addItem(t)

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QS
 
 from core import Fmt, AlertItem
 from page_base import SessionPage
-from widgets_common import Card, MeterCard, UsageBar, Sparkline, GREEN, ORANGE, RED, GRAY
+from widgets_common import Card, MeterCard, UsageBar, Sparkline, GREEN, ORANGE, RED, GRAY, preserve_scroll
 
 
 class DashboardPage(SessionPage):
@@ -34,6 +34,15 @@ class DashboardPage(SessionPage):
         lay.addWidget(self.title_label)
         lay.addWidget(self.subtitle_label)
 
+        # CPU/Memory/GPU/Power are a QHBoxLayout rather than fixed grid columns: a QGridLayout keeps
+        # reserving a hidden widget's column (just invisible, not collapsed), which left a blank gap
+        # where GPU/Power sat on machines that don't report one. A box layout actually removes the
+        # widget's slot when it's taken out, so refresh() adds/removes GPU and Power from it instead
+        # of merely toggling their visibility.
+        self.metrics_row = QHBoxLayout()
+        self.metrics_row.setSpacing(12)
+        lay.addLayout(self.metrics_row)
+
         grid = QGridLayout()
         grid.setSpacing(12)
         lay.addLayout(grid)
@@ -41,6 +50,10 @@ class DashboardPage(SessionPage):
         self.cpu_card = MeterCard("CPU", None)
         self.mem_card = MeterCard("Memory", None)
         self.gpu_card = MeterCard("GPU", None)
+        self.power_card = Card("Power")
+        self.power_value = QLabel("–")
+        self.power_value.setStyleSheet("font-size: 20px; font-weight: 600;")
+        self.power_card.add(self.power_value)
         self.storage_card = Card("Storage")
         self.cpu_hist_card = Card("CPU history")
         self.cpu_sparkline = Sparkline(max_value=100)
@@ -53,13 +66,12 @@ class DashboardPage(SessionPage):
         self.alerts_label.setWordWrap(True)
         self.alerts_card.add(self.alerts_label)
 
-        grid.addWidget(self.cpu_card, 0, 0)
-        grid.addWidget(self.mem_card, 0, 1)
-        grid.addWidget(self.gpu_card, 0, 2)
-        grid.addWidget(self.storage_card, 1, 0)
-        grid.addWidget(self.cpu_hist_card, 1, 1)
-        grid.addWidget(self.mem_hist_card, 1, 2)
-        grid.addWidget(self.alerts_card, 2, 0, 1, 3)
+        self.metrics_row.addWidget(self.cpu_card)
+        self.metrics_row.addWidget(self.mem_card)
+        grid.addWidget(self.storage_card, 0, 0)
+        grid.addWidget(self.cpu_hist_card, 0, 1)
+        grid.addWidget(self.mem_hist_card, 0, 2)
+        grid.addWidget(self.alerts_card, 1, 0, 1, 3)
 
         btn_row = QHBoxLayout()
         self.restart_btn = QPushButton("Restart…")
@@ -96,6 +108,15 @@ class DashboardPage(SessionPage):
         super().showEvent(e)
         self.refresh()
 
+    def _set_metric_card_shown(self, card, shown: bool):
+        in_layout = self.metrics_row.indexOf(card) != -1
+        if shown and not in_layout:
+            self.metrics_row.addWidget(card)
+            card.setVisible(True)
+        elif not shown and in_layout:
+            self.metrics_row.removeWidget(card)
+            card.setVisible(False)
+
     def refresh(self):
         s = self.session
         self.title_label.setText(s.display_name)
@@ -103,9 +124,12 @@ class DashboardPage(SessionPage):
         self.cpu_card.set_value(s.cpu_percent, "")
         self.mem_card.set_value(s.mem_used_fraction * 100 if s.mem_total > 0 else None,
                                  f"{Fmt.bytes(s.mem_used)} of {Fmt.bytes(s.mem_total)}")
-        self.gpu_card.setVisible(s.gpu_percent is not None)
+        self._set_metric_card_shown(self.gpu_card, s.gpu_percent is not None)
         if s.gpu_percent is not None:
             self.gpu_card.set_value(s.gpu_percent, "")
+        self._set_metric_card_shown(self.power_card, s.power_watts is not None)
+        if s.power_watts is not None:
+            self.power_value.setText(f"{s.power_watts:.1f} W")
 
         for i in reversed(range(self.storage_card.body.count())):
             self.storage_card.body.itemAt(i).widget().setParent(None)
@@ -144,11 +168,11 @@ class StoragePage(SessionPage):
     def __init__(self, session, parent=None):
         super().__init__(session, parent)
         root = QVBoxLayout(self)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        root.addWidget(scroll)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        root.addWidget(self.scroll)
         self.inner = QWidget()
-        scroll.setWidget(self.inner)
+        self.scroll.setWidget(self.inner)
         self.lay = QVBoxLayout(self.inner)
         self.lay.addStretch(1)
         self._on_updated("poll")
@@ -156,20 +180,21 @@ class StoragePage(SessionPage):
     def _on_updated(self, topic):
         if topic not in ("poll", "storage"):
             return
-        while self.lay.count() > 1:
-            item = self.lay.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
-        s = self.session
-        from truenas import TrueNASSession
-        is_tn = isinstance(s, TrueNASSession)
-        title = QLabel("Pools" if is_tn else "Storage")
-        title.setStyleSheet("font-weight: 600;")
-        self.lay.insertWidget(self.lay.count() - 1, title)
-        if not s.storage:
-            self.lay.insertWidget(self.lay.count() - 1, QLabel("No data yet"))
-        for item in s.storage:
-            self.lay.insertWidget(self.lay.count() - 1, self._row(item, is_tn))
+        with preserve_scroll(self.scroll):
+            while self.lay.count() > 1:
+                item = self.lay.takeAt(0)
+                if item.widget():
+                    item.widget().setParent(None)
+            s = self.session
+            from truenas import TrueNASSession
+            is_tn = isinstance(s, TrueNASSession)
+            title = QLabel("Pools" if is_tn else "Storage")
+            title.setStyleSheet("font-weight: 600;")
+            self.lay.insertWidget(self.lay.count() - 1, title)
+            if not s.storage:
+                self.lay.insertWidget(self.lay.count() - 1, QLabel("No data yet"))
+            for item in s.storage:
+                self.lay.insertWidget(self.lay.count() - 1, self._row(item, is_tn))
 
     def _row(self, item, is_tn: bool) -> QWidget:
         w = QWidget()
@@ -252,34 +277,35 @@ class ServicesPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        filt = self.filter_edit.text().lower()
-        for svc in self.session.services:
-            if filt and filt not in svc.displayName.lower():
-                continue
-            item = QListWidgetItem()
-            w = QWidget()
-            lay = QHBoxLayout(w)
-            lay.setContentsMargins(4, 2, 4, 2)
-            dot = QLabel("●")
-            dot.setStyleSheet(f"color: {'green' if svc.isRunning else 'gray'};")
-            lay.addWidget(dot)
-            text = QLabel(f"{svc.displayName}\n" + " · ".join(x for x in [svc.state, svc.startMode] if x))
-            lay.addWidget(text, 1)
-            if svc.canControl:
-                menu_btn = QPushButton("⋯")
-                menu_btn.setFixedWidth(28)
-                menu = QMenu(menu_btn)
-                menu.addAction("Start", lambda s=svc: self.session.service_action(s, "start"))
-                menu.addAction("Stop", lambda s=svc: self.session.service_action(s, "stop"))
-                menu.addAction("Restart", lambda s=svc: self.session.service_action(s, "restart"))
-                menu_btn.setMenu(menu)
-                lay.addWidget(menu_btn)
-            self.list.addItem(item)
-            self.list.setItemWidget(item, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            item.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            filt = self.filter_edit.text().lower()
+            for svc in self.session.services:
+                if filt and filt not in svc.displayName.lower():
+                    continue
+                item = QListWidgetItem()
+                w = QWidget()
+                lay = QHBoxLayout(w)
+                lay.setContentsMargins(4, 2, 4, 2)
+                dot = QLabel("●")
+                dot.setStyleSheet(f"color: {'green' if svc.isRunning else 'gray'};")
+                lay.addWidget(dot)
+                text = QLabel(f"{svc.displayName}\n" + " · ".join(x for x in [svc.state, svc.startMode] if x))
+                lay.addWidget(text, 1)
+                if svc.canControl:
+                    menu_btn = QPushButton("⋯")
+                    menu_btn.setFixedWidth(28)
+                    menu = QMenu(menu_btn)
+                    menu.addAction("Start", lambda s=svc: self.session.service_action(s, "start"))
+                    menu.addAction("Stop", lambda s=svc: self.session.service_action(s, "stop"))
+                    menu.addAction("Restart", lambda s=svc: self.session.service_action(s, "restart"))
+                    menu_btn.setMenu(menu)
+                    lay.addWidget(menu_btn)
+                self.list.addItem(item)
+                self.list.setItemWidget(item, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                item.setSizeHint(_hint)
 
 
 class AlertsPage(SessionPage):
@@ -295,35 +321,36 @@ class AlertsPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        alerts = self.session.alerts
-        if not alerts:
-            self.list.addItem(f"✅ All clear — nothing needs attention on {self.session.display_name}.")
-            return
-        colors = {AlertItem.CRITICAL: "red", AlertItem.WARNING: "orange", AlertItem.INFO: "#0A84FF"}
-        glyphs = {AlertItem.CRITICAL: "✖", AlertItem.WARNING: "⚠", AlertItem.INFO: "ℹ"}
-        for a in alerts:
-            item = QListWidgetItem()
-            w = QWidget()
-            lay = QHBoxLayout(w)
-            icon = QLabel(glyphs[a.level])
-            icon.setStyleSheet(f"color: {colors[a.level]};")
-            lay.addWidget(icon)
-            text_lay = QVBoxLayout()
-            title = QLabel(a.title)
-            text_lay.addWidget(title)
-            if a.detail:
-                detail = QLabel(a.detail)
-                detail.setStyleSheet("color: palette(mid); font-size: 13px;")
-                text_lay.addWidget(detail)
-            lay.addLayout(text_lay, 1)
-            from truenas import TrueNASSession
-            if isinstance(self.session, TrueNASSession):
-                btn = QPushButton("Dismiss")
-                btn.clicked.connect(lambda _, aa=a: self.session.dismiss_alert(aa))
-                lay.addWidget(btn)
-            self.list.addItem(item)
-            self.list.setItemWidget(item, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            item.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            alerts = self.session.alerts
+            if not alerts:
+                self.list.addItem(f"✅ All clear — nothing needs attention on {self.session.display_name}.")
+                return
+            colors = {AlertItem.CRITICAL: "red", AlertItem.WARNING: "orange", AlertItem.INFO: "#0A84FF"}
+            glyphs = {AlertItem.CRITICAL: "✖", AlertItem.WARNING: "⚠", AlertItem.INFO: "ℹ"}
+            for a in alerts:
+                item = QListWidgetItem()
+                w = QWidget()
+                lay = QHBoxLayout(w)
+                icon = QLabel(glyphs[a.level])
+                icon.setStyleSheet(f"color: {colors[a.level]};")
+                lay.addWidget(icon)
+                text_lay = QVBoxLayout()
+                title = QLabel(a.title)
+                text_lay.addWidget(title)
+                if a.detail:
+                    detail = QLabel(a.detail)
+                    detail.setStyleSheet("color: palette(mid); font-size: 13px;")
+                    text_lay.addWidget(detail)
+                lay.addLayout(text_lay, 1)
+                from truenas import TrueNASSession
+                if isinstance(self.session, TrueNASSession):
+                    btn = QPushButton("Dismiss")
+                    btn.clicked.connect(lambda _, aa=a: self.session.dismiss_alert(aa))
+                    lay.addWidget(btn)
+                self.list.addItem(item)
+                self.list.setItemWidget(item, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                item.setSizeHint(_hint)

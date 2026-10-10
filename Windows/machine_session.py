@@ -27,6 +27,7 @@ from core import Machine, MachineKind, ConnectionState, StorageItem, ServiceRow,
 class MachineSession(QObject):
     updated = Signal(str)          # topic: "poll", "services", "processes", "datasets", "vms", ...
     action_error = Signal(str)
+    _invoke = Signal(object)       # carries a zero-arg callable to run on the main/GUI thread
 
     HISTORY_LENGTH = 90
 
@@ -48,6 +49,11 @@ class MachineSession(QObject):
         self.gpu_percent: Optional[float] = None
         self.net_rx_rate: Optional[float] = None
         self.net_tx_rate: Optional[float] = None
+        # Watts, when this kind can read it (Windows via LibreHardwareMonitor's Power sensors,
+        # Linux/TrueNAS via Intel RAPL + nvidia-smi when present). None where there's no sensible
+        # source — a VM (OPNsense) or where reading it would be too slow to poll (macOS, which would
+        # need `powermetrics`; see MacSession's Power & Thermal page for why that's not polled here).
+        self.power_watts: Optional[float] = None
         self.extra_alerts: list[AlertItem] = []
         self.last_refresh = None
         self.action_error_text: Optional[str] = None
@@ -59,6 +65,7 @@ class MachineSession(QObject):
         self._queue: "queue.Queue" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._invoke.connect(lambda fn: fn())
 
     # -- identity / convenience --
     @property
@@ -157,6 +164,18 @@ class MachineSession(QObject):
     def submit(self, fn, topic: str = ""):
         """Runs fn() on this session's worker thread; emits updated(topic) when it returns (or errors)."""
         self._queue.put((fn, topic))
+
+    def _main_thread(self, fn):
+        """Wraps an on_done-style callback so calling it from the worker thread actually runs it on
+        the main/GUI thread. Unlike `updated`/`action_error`, a plain Python callback passed in from
+        a page (e.g. run_console's on_done) gets no automatic Qt thread marshaling — calling it
+        straight from the worker thread is an unsafe cross-thread Qt widget access once that
+        callback touches a QWidget, which can crash the whole app rather than just raise a Python
+        exception. Routing it through the `_invoke` signal gets Qt's normal queued-connection
+        delivery instead."""
+        def wrapper(*args, **kwargs):
+            self._invoke.emit(lambda: fn(*args, **kwargs))
+        return wrapper
 
     def forget_host_key(self):
         from ssh_runner import forget_host_key

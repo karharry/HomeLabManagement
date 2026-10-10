@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QP
 import theme
 from core import Fmt
 from page_base import SessionPage
-from widgets_common import Card, Sparkline, UsageBar
+from widgets_common import Card, Sparkline, UsageBar, preserve_scroll
 
 
 class TrueNASAppsPage(SessionPage):
@@ -31,38 +31,39 @@ class TrueNASAppsPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        apps = self.session.apps
-        if not apps:
-            self.list.addItem("No apps installed, or this TrueNAS version doesn't support them.")
-            return
-        colors = {"RUNNING": "green", "DEPLOYING": "orange", "STOPPED": "gray"}
-        for a in apps:
-            item = QListWidgetItem()
-            w = QWidget()
-            h = QHBoxLayout(w)
-            dot = QLabel("●")
-            dot.setStyleSheet(f"color: {colors.get(a.state, 'red')};")
-            h.addWidget(dot)
-            detail = f"{a.state.capitalize()}" + (f" · {a.human_version}" if a.human_version else "") + \
-                     (" · update available" if a.upgrade_available else "")
-            h.addWidget(QLabel(f"{a.name}\n{detail}"), 1)
-            if a.is_running:
-                r = QPushButton("Restart")
-                r.clicked.connect(lambda _, aa=a: self.session.app_action(aa, "redeploy"))
-                s = QPushButton("Stop")
-                s.clicked.connect(lambda _, aa=a: self.session.app_action(aa, "stop"))
-                h.addWidget(r)
-                h.addWidget(s)
-            elif a.state == "STOPPED":
-                st = QPushButton("Start")
-                st.clicked.connect(lambda _, aa=a: self.session.app_action(aa, "start"))
-                h.addWidget(st)
-            self.list.addItem(item)
-            self.list.setItemWidget(item, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            item.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            apps = self.session.apps
+            if not apps:
+                self.list.addItem("No apps installed, or this TrueNAS version doesn't support them.")
+                return
+            colors = {"RUNNING": "green", "DEPLOYING": "orange", "STOPPED": "gray"}
+            for a in apps:
+                item = QListWidgetItem()
+                w = QWidget()
+                h = QHBoxLayout(w)
+                dot = QLabel("●")
+                dot.setStyleSheet(f"color: {colors.get(a.state, 'red')};")
+                h.addWidget(dot)
+                detail = f"{a.state.capitalize()}" + (f" · {a.human_version}" if a.human_version else "") + \
+                         (" · update available" if a.upgrade_available else "")
+                h.addWidget(QLabel(f"{a.name}\n{detail}"), 1)
+                if a.is_running:
+                    r = QPushButton("Restart")
+                    r.clicked.connect(lambda _, aa=a: self.session.app_action(aa, "redeploy"))
+                    s = QPushButton("Stop")
+                    s.clicked.connect(lambda _, aa=a: self.session.app_action(aa, "stop"))
+                    h.addWidget(r)
+                    h.addWidget(s)
+                elif a.state == "STOPPED":
+                    st = QPushButton("Start")
+                    st.clicked.connect(lambda _, aa=a: self.session.app_action(aa, "start"))
+                    h.addWidget(st)
+                self.list.addItem(item)
+                self.list.setItemWidget(item, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                item.setSizeHint(_hint)
 
     def _install(self):
         dlg = InstallAppDialog(self.session, self)
@@ -317,21 +318,22 @@ class ContainersPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        if self.session.containers_error:
-            self.list.addItem(f"⚠ {self.session.containers_error}")
-        containers = self.session.containers
-        if not containers:
-            self.list.addItem("No containers." if self.session.containers_loaded else "Loading containers…")
-            return
-        for c in containers:
-            item = QListWidgetItem()
-            w = self._row_widget(c)
-            self.list.addItem(item)
-            self.list.setItemWidget(item, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            item.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            if self.session.containers_error:
+                self.list.addItem(f"⚠ {self.session.containers_error}")
+            containers = self.session.containers
+            if not containers:
+                self.list.addItem("No containers." if self.session.containers_loaded else "Loading containers…")
+                return
+            for c in containers:
+                item = QListWidgetItem()
+                w = self._row_widget(c)
+                self.list.addItem(item)
+                self.list.setItemWidget(item, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                item.setSizeHint(_hint)
 
     def _row_widget(self, c) -> QWidget:
         w = QWidget()
@@ -413,25 +415,26 @@ class TrueNASContainersPage(ContainersPage):
         self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        if not self.session.is_ssh_configured:
-            self.list.addItem("SSH required — enable it in the machine's Edit sheet to list containers "
-                               "outside TrueNAS's app system.")
-            return
-        if self.session.containers_error:
-            self.list.addItem(f"⚠ {self.session.containers_error}")
-        visible = [c for c in self.session.containers if self._show_managed or c.truenas_app is None]
-        if not visible:
-            self.list.addItem("No containers." if self.session.containers_loaded else "Loading containers…")
-            return
-        for c in visible:
-            item = QListWidgetItem()
-            w = self._row_widget(c)
-            if c.truenas_app:
-                lbl = w.layout().itemAt(1).widget()
-                lbl.setText(f"[TrueNAS app: {c.truenas_app}] " + lbl.text())
-            self.list.addItem(item)
-            self.list.setItemWidget(item, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            item.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            if not self.session.is_ssh_configured:
+                self.list.addItem("SSH required — enable it in the machine's Edit sheet to list containers "
+                                   "outside TrueNAS's app system.")
+                return
+            if self.session.containers_error:
+                self.list.addItem(f"⚠ {self.session.containers_error}")
+            visible = [c for c in self.session.containers if self._show_managed or c.truenas_app is None]
+            if not visible:
+                self.list.addItem("No containers." if self.session.containers_loaded else "Loading containers…")
+                return
+            for c in visible:
+                item = QListWidgetItem()
+                w = self._row_widget(c)
+                if c.truenas_app:
+                    lbl = w.layout().itemAt(1).widget()
+                    lbl.setText(f"[TrueNAS app: {c.truenas_app}] " + lbl.text())
+                self.list.addItem(item)
+                self.list.setItemWidget(item, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                item.setSizeHint(_hint)

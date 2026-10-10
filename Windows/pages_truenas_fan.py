@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QS
 from core import Fmt
 from fan_client import FanConfig
 from page_base import SessionPage
-from widgets_common import Card, Sparkline
+from widgets_common import Card, Sparkline, preserve_scroll
 
 
 @dataclass
@@ -264,10 +264,11 @@ class TrueNASFanPage(SessionPage):
             self.duty_value.setText(f"{int(status.pwm_pct)}%" if status.pwm_pct is not None else "–")
             self.temp_value.setText(f"{status.ctl_temp:.1f}°C" if status.ctl_temp is not None else "–")
             self.curve_editor.now_temp = status.ctl_temp
-            self.temps_list.clear()
-            for key, t in sorted((status.temps or {}).items(), key=lambda kv: -kv[1].temp):
-                marker = "  [controlling]" if key == status.src else ""
-                self.temps_list.addItem(f"{key} ({t.kind}): {t.temp:.1f}°C{marker}")
+            with preserve_scroll(self.temps_list):
+                self.temps_list.clear()
+                for key, t in sorted((status.temps or {}).items(), key=lambda kv: -kv[1].temp):
+                    marker = "  [controlling]" if key == status.src else ""
+                    self.temps_list.addItem(f"{key} ({t.kind}): {t.temp:.1f}°C{marker}")
             if status.error:
                 self.error_label.setText((self.error_label.text() + "\n" if self.error_label.text() else "")
                                           + f"{status.error} — the controller forces the fan to 100%.")

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core import (Machine, MachineKind, MachineStore, NavItem, ConnectionState, StorageItem, ServiceRow,
-                   AlertItem, Fmt)
+                   AlertItem, Fmt, sort_nav_items)
 from machine_session import MachineSession
 from ssh_runner import SSHRunner, SSHSettings, SSHError
 from truenas_client import TrueNASClient, TrueNASError
@@ -349,13 +349,15 @@ class TrueNASSession(MachineSession):
         self._last_vm_sample_time = 0.0
         self._last_container_load_time = 0.0
         self._last_fan_poll_time = 0.0
+        self._last_power_sample_time = 0.0
+        self._prev_rapl: Optional[tuple] = None
 
     @property
     def nav_items(self):
-        items = list(self.machine.kind.nav_items)
-        if self.is_ssh_configured and NavItem.alerts in items:
-            items.insert(items.index(NavItem.alerts), NavItem.vpn)
-        return items
+        items = set(self.machine.kind.nav_items)
+        if self.is_ssh_configured:
+            items.add(NavItem.vpn)
+        return sort_nav_items(items)
 
     @property
     def consoleIsAvailable(self) -> bool:  # ConsoleHosting
@@ -409,7 +411,36 @@ class TrueNASSession(MachineSession):
         if self._fan_active and now - self._last_fan_poll_time > 3:
             self._last_fan_poll_time = now
             self._poll_fan_impl()
+        if self.is_ssh_configured and now - self._last_power_sample_time > 10:
+            self._last_power_sample_time = now
+            self._sample_power()
         return ok
+
+    def _sample_power(self):
+        # TrueNAS SCALE is Debian-based, so the same Intel RAPL technique used for Linux targets
+        # applies here too — optional (needs SSH), and only attempted if the counter exists, so this
+        # is a no-op (not an error) on AMD/ARM or VM-hosted TrueNAS boxes without it.
+        try:
+            out = self._vm_collector.sh(
+                "cat /sys/class/powercap/intel-rapl:0/energy_uj 2>/dev/null", self._ssh_settings(),
+                sudo=True, merge=True)
+        except Exception:
+            return
+        out = out.strip()
+        if not out:
+            self.power_watts = None
+            return
+        try:
+            energy_uj = float(out)
+        except ValueError:
+            return
+        now_t = time.time()
+        if self._prev_rapl:
+            prev_e, prev_t = self._prev_rapl
+            dt = now_t - prev_t
+            if dt > 0.5 and energy_uj >= prev_e:
+                self.power_watts = (energy_uj - prev_e) / 1_000_000 / dt
+        self._prev_rapl = (energy_uj, now_t)
 
     def _apply_realtime(self, rt):
         if rt.cpu is not None:
@@ -537,6 +568,7 @@ class TrueNASSession(MachineSession):
         self._vm_collector.close()
         self._container_collector.close()
         self._console_runner.close()
+        self._prev_rapl = None
 
     def refresh_services(self):
         self.submit(lambda: self._refresh_all(), "services")
@@ -625,6 +657,7 @@ class TrueNASSession(MachineSession):
         self.submit(do, "apps")
 
     def install_custom_app(self, name: str, yaml: str, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             c = self._client
             if not c:
@@ -842,6 +875,7 @@ done
         self.submit(do, "containers")
 
     def container_logs(self, c: docker_.DockerContainer, on_done):
+        on_done = self._main_thread(on_done)
         if not self._safe_name(c.name):
             on_done("Invalid container name.")
             return
@@ -892,6 +926,7 @@ done
         self.updated.emit("fan")
 
     def save_fan(self, config: FanConfig, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             client = self._fan_client()
             if client is None:
@@ -1023,11 +1058,29 @@ done
             if not c:
                 return
             try:
-                obj = c.call_raw("update.check_available")
+                # update.check_available was removed in newer SCALE releases (confirmed: throws
+                # "Method does not exist" on a real 25.10.7/Goldeye box) — update.status is the
+                # current method, shaped as {"code": "NORMAL", "status": {"new_version": ...}, "error": ...}
+                # rather than the old flat {"status", "version"}.
+                obj = c.call_raw("update.status")
             except Exception:
                 return
-            self.update_status = _tn_str(obj, "status")
-            self.update_version = _tn_str(obj, "version")
+            code = _tn_str(obj, "code")
+            labels = {"NORMAL": "Up to date", "REBOOT_REQUIRED": "Reboot required to finish an update",
+                      "HAS_UPDATE": "Update available", "UPDATE_AVAILABLE": "Update available",
+                      "ERROR": "Error checking for updates"}
+            self.update_status = labels.get(code, code)
+            status = obj.get("status") if isinstance(obj, dict) else None
+            new_version = status.get("new_version") if isinstance(status, dict) else None
+            if isinstance(new_version, dict):
+                self.update_version = _tn_str(new_version, "version") or _tn_str(new_version, "train")
+            elif isinstance(new_version, str):
+                self.update_version = new_version
+            else:
+                self.update_version = None
+            err = obj.get("error") if isinstance(obj, dict) else None
+            if err:
+                self.update_status = f"{self.update_status} — {err}" if self.update_status else str(err)
         self.submit(do, "updates")
 
     # -- Users --
@@ -1053,6 +1106,7 @@ done
 
     # -- Console --
     def run_console(self, command: str, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             if not self.is_ssh_configured:
                 on_done(self.consoleUnavailableReason)
@@ -1090,6 +1144,7 @@ done
         self.submit(do, "vpn")
 
     def add_vpn_tunnel(self, name: str, config: str, on_done):
+        on_done = self._main_thread(on_done)
         def do():
             if not wg_valid_name(name):
                 on_done("Use letters, numbers, dashes and underscores only.")

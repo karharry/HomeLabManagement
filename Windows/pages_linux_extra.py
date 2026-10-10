@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QL
                                  QWidget, QLineEdit, QListWidgetItem, QMessageBox)
 
 from page_base import SessionPage
-from widgets_common import Card
+from widgets_common import Card, preserve_scroll
 
 
 class PiholePage(SessionPage):
@@ -155,25 +155,26 @@ class LocalDNSPage(SessionPage):
 
     def _refresh_records(self):
         self.error_label.setText(self.session.local_dns_error or "")
-        self.list.clear()
-        records = self.session.local_dns_records
-        if not records:
-            self.list.addItem("No local DNS records configured.")
-            return
-        for r in records:
-            item = QListWidgetItem()
-            w = QWidget()
-            h = QHBoxLayout(w)
-            h.setContentsMargins(4, 2, 4, 2)
-            h.addWidget(QLabel(f"{r.domain}  →  {r.ip}"), 1)
-            remove_btn = QPushButton("Remove")
-            remove_btn.clicked.connect(lambda _, rr=r: self._confirm_remove(rr))
-            h.addWidget(remove_btn)
-            self.list.addItem(item)
-            self.list.setItemWidget(item, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            item.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            records = self.session.local_dns_records
+            if not records:
+                self.list.addItem("No local DNS records configured.")
+                return
+            for r in records:
+                item = QListWidgetItem()
+                w = QWidget()
+                h = QHBoxLayout(w)
+                h.setContentsMargins(4, 2, 4, 2)
+                h.addWidget(QLabel(f"{r.domain}  →  {r.ip}"), 1)
+                remove_btn = QPushButton("Remove")
+                remove_btn.clicked.connect(lambda _, rr=r: self._confirm_remove(rr))
+                h.addWidget(remove_btn)
+                self.list.addItem(item)
+                self.list.setItemWidget(item, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                item.setSizeHint(_hint)
 
     def _add(self):
         domain, ip = self.domain_edit.text().strip(), self.ip_edit.text().strip()
@@ -259,6 +260,78 @@ class PiKVMPage(SessionPage):
         QDesktopServices.openUrl(QUrl(url))
 
 
+class LinuxVMsPage(SessionPage):
+    """Generic libvirt/QEMU VM list for non-TrueNAS Linux hosts (e.g. a Debian server running a
+    Home Assistant OS VM under KVM). No live resource graphs — just state + start/stop/restart,
+    mirroring the simpler TrueNASAppsPage rather than TrueNAS's full VMRow with sparklines."""
+
+    def __init__(self, session, parent=None):
+        super().__init__(session, parent)
+        lay = QVBoxLayout(self)
+        self.error_label = QLabel()
+        self.error_label.setStyleSheet("color: orange;")
+        lay.addWidget(self.error_label)
+        self.list = QListWidget()
+        lay.addWidget(self.list)
+        session.set_vms_active(True)
+        self._refresh()
+
+    def hideEvent(self, e):
+        self.session.set_vms_active(False)
+        super().hideEvent(e)
+
+    def _on_updated(self, topic):
+        if topic in ("vms", "poll"):
+            self._refresh()
+
+    def _refresh(self):
+        self.error_label.setText(self.session.vms_error or "")
+        with preserve_scroll(self.list):
+            self.list.clear()
+            vms = self.session.vms
+            if not vms:
+                self.list.addItem("No libvirt VMs found on this system.")
+                return
+            colors = {"running": "green", "paused": "orange", "shut off": "gray"}
+            for v in vms:
+                item = QListWidgetItem()
+                w = QWidget()
+                h = QHBoxLayout(w)
+                h.setContentsMargins(4, 2, 4, 2)
+                dot = QLabel("●")
+                dot.setStyleSheet(f"color: {colors.get(v.state, 'red')};")
+                h.addWidget(dot)
+                mem = f"{v.memory_mib} MiB" if v.memory_mib else "–"
+                detail = f"{v.state.capitalize()} · {v.vcpus} vCPU · {mem}" + (" · autostart" if v.autostart else "")
+                h.addWidget(QLabel(f"{v.name}\n{detail}"), 1)
+                if v.is_running:
+                    r = QPushButton("Restart")
+                    r.clicked.connect(lambda _, vv=v: self.session.vm_action(vv, "restart"))
+                    s = QPushButton("Stop")
+                    s.clicked.connect(lambda _, vv=v: self.session.vm_action(vv, "stop"))
+                    p = QPushButton("Force Off")
+                    p.clicked.connect(lambda _, vv=v: self._confirm_poweroff(vv))
+                    h.addWidget(r)
+                    h.addWidget(s)
+                    h.addWidget(p)
+                else:
+                    st = QPushButton("Start")
+                    st.clicked.connect(lambda _, vv=v: self.session.vm_action(vv, "start"))
+                    h.addWidget(st)
+                self.list.addItem(item)
+                self.list.setItemWidget(item, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                item.setSizeHint(_hint)
+
+    def _confirm_poweroff(self, v):
+        resp = QMessageBox.warning(self, f"Force off “{v.name}”?",
+                                    "This is the equivalent of pulling the plug — unsaved state in the VM will be lost.",
+                                    QMessageBox.Ok | QMessageBox.Cancel)
+        if resp == QMessageBox.Ok:
+            self.session.vm_action(v, "poweroff")
+
+
 class TailscalePage(SessionPage):
     def __init__(self, session, parent=None):
         super().__init__(session, parent)
@@ -292,13 +365,14 @@ class TailscalePage(SessionPage):
             self.status_label.setText("Loading Tailscale status…")
             return
         self.status_label.setText(("● Running" if s.is_running else f"○ {s.backend_state}"))
-        self.list.clear()
-        for p in s.peers:
-            flags = []
-            if p.is_self:
-                flags.append("this machine")
-            if p.is_exit_node:
-                flags.append("exit node")
-            name = p.host_name + (f" ({', '.join(flags)})" if flags else "")
-            detail = f"{p.ip}" + (f" · {p.os}" if p.os else "")
-            self.list.addItem(("● " if p.online else "○ ") + f"{name}\n{detail}")
+        with preserve_scroll(self.list):
+            self.list.clear()
+            for p in s.peers:
+                flags = []
+                if p.is_self:
+                    flags.append("this machine")
+                if p.is_exit_node:
+                    flags.append("exit node")
+                name = p.host_name + (f" ({', '.join(flags)})" if flags else "")
+                detail = f"{p.ip}" + (f" · {p.os}" if p.os else "")
+                self.list.addItem(("● " if p.online else "○ ") + f"{name}\n{detail}")

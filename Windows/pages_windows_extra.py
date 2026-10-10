@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QLis
                                  QAbstractItemView)
 
 from page_base import SessionPage
-from widgets_common import Card
+from widgets_common import Card, preserve_scroll
 
 
 class WindowsStartupPage(SessionPage):
@@ -25,26 +25,27 @@ class WindowsStartupPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        if not self.session.startup_loaded:
-            self.list.addItem("Loading startup items…")
-            return
-        for item in self.session.startup_items:
-            row = QListWidgetItem()
-            w = QWidget()
-            h = QHBoxLayout(w)
-            dot = QLabel("⏸" if item.disabled else "✅")
-            h.addWidget(dot)
-            detail = f"{item.source_label} · {item.scope}" + (f" · {item.publisher}" if item.publisher else "")
-            h.addWidget(QLabel(f"{item.name}\n{detail}"), 1)
-            btn = QPushButton("Enable" if item.disabled else "Disable")
-            btn.clicked.connect(lambda _, it=item: self.session.set_startup(it, not it.disabled))
-            h.addWidget(btn)
-            self.list.addItem(row)
-            self.list.setItemWidget(row, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            row.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            if not self.session.startup_loaded:
+                self.list.addItem("Loading startup items…")
+                return
+            for item in self.session.startup_items:
+                row = QListWidgetItem()
+                w = QWidget()
+                h = QHBoxLayout(w)
+                dot = QLabel("⏸" if item.disabled else "✅")
+                h.addWidget(dot)
+                detail = f"{item.source_label} · {item.scope}" + (f" · {item.publisher}" if item.publisher else "")
+                h.addWidget(QLabel(f"{item.name}\n{detail}"), 1)
+                btn = QPushButton("Enable" if item.disabled else "Disable")
+                btn.clicked.connect(lambda _, it=item: self.session.set_startup(it, not it.disabled))
+                h.addWidget(btn)
+                self.list.addItem(row)
+                self.list.setItemWidget(row, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                row.setSizeHint(_hint)
 
 
 class WindowsScheduledTasksPage(SessionPage):
@@ -60,30 +61,31 @@ class WindowsScheduledTasksPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        for t in self.session.scheduled_tasks:
-            row = QListWidgetItem()
-            w = QWidget()
-            h = QHBoxLayout(w)
-            dot = QLabel("●")
-            dot.setStyleSheet(f"color: {'green' if t.state in ('Ready', 'Running') else 'gray'};")
-            h.addWidget(dot)
-            h.addWidget(QLabel(f"{t.name}\n{t.path}"), 1)
-            menu_btn = QPushButton("⋯")
-            menu_btn.setFixedWidth(28)
-            menu = QMenu(menu_btn)
-            menu.addAction("Run Now", lambda tt=t: self.session.scheduled_task_action(tt, "run"))
-            if t.state == "Disabled":
-                menu.addAction("Enable", lambda tt=t: self.session.scheduled_task_action(tt, "enable"))
-            else:
-                menu.addAction("Disable", lambda tt=t: self.session.scheduled_task_action(tt, "disable"))
-            menu_btn.setMenu(menu)
-            h.addWidget(menu_btn)
-            self.list.addItem(row)
-            self.list.setItemWidget(row, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            row.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            for t in self.session.scheduled_tasks:
+                row = QListWidgetItem()
+                w = QWidget()
+                h = QHBoxLayout(w)
+                dot = QLabel("●")
+                dot.setStyleSheet(f"color: {'green' if t.state in ('Ready', 'Running') else 'gray'};")
+                h.addWidget(dot)
+                h.addWidget(QLabel(f"{t.name}\n{t.path}"), 1)
+                menu_btn = QPushButton("⋯")
+                menu_btn.setFixedWidth(28)
+                menu = QMenu(menu_btn)
+                menu.addAction("Run Now", lambda tt=t: self.session.scheduled_task_action(tt, "run"))
+                if t.state == "Disabled":
+                    menu.addAction("Enable", lambda tt=t: self.session.scheduled_task_action(tt, "enable"))
+                else:
+                    menu.addAction("Disable", lambda tt=t: self.session.scheduled_task_action(tt, "disable"))
+                menu_btn.setMenu(menu)
+                h.addWidget(menu_btn)
+                self.list.addItem(row)
+                self.list.setItemWidget(row, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                row.setSizeHint(_hint)
 
 
 class WindowsSoftwarePage(SessionPage):
@@ -180,7 +182,8 @@ class WindowsEventLogPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        colors = {"Error": "red", "Warning": "orange"}
-        for e in self.session.event_log:
-            self.list.addItem(f"[{e.level}] {e.message}\n{e.time} · {e.log}")
+        with preserve_scroll(self.list):
+            self.list.clear()
+            colors = {"Error": "red", "Warning": "orange"}
+            for e in self.session.event_log:
+                self.list.addItem(f"[{e.level}] {e.message}\n{e.time} · {e.log}")

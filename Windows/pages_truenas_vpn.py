@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QL
 
 from core import Fmt
 from page_base import SessionPage
+from widgets_common import preserve_scroll
 from wireguard_ import is_valid_name
 
 
@@ -31,50 +32,51 @@ class TrueNASVPNPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        if self.session.vpn_error:
-            self.list.addItem(f"⚠ {self.session.vpn_error}")
-        if not self.session.vpn_containers:
-            self.list.addItem("No tunnels configured. Add a WireGuard config — your own, or one exported "
-                               "from a VPN provider like ProtonVPN or Mullvad.")
-            return
-        for c in self.session.vpn_containers:
-            item = QListWidgetItem()
-            w = QWidget()
-            lay = QVBoxLayout(w)
-            head = QHBoxLayout()
-            dot = QLabel("●")
-            dot.setStyleSheet(f"color: {'green' if c.running else 'gray'};")
-            head.addWidget(dot)
-            head.addWidget(QLabel(c.name))
-            head.addStretch(1)
-            if c.running:
-                btn = QPushButton("Stop")
-                btn.clicked.connect(lambda _, cc=c: self.session.stop_vpn_tunnel(cc.name))
-            else:
-                btn = QPushButton("Start")
-                btn.clicked.connect(lambda _, cc=c: self.session.start_vpn_tunnel(cc.name))
-            head.addWidget(btn)
-            remove_btn = QPushButton("Remove")
-            remove_btn.clicked.connect(lambda _, cc=c: self._confirm_remove(cc))
-            head.addWidget(remove_btn)
-            lay.addLayout(head)
-            if c.tunnel:
-                t = c.tunnel
-                endpoint = t.endpoint or "–"
-                detail = QLabel(f"Endpoint: {endpoint}    Handshake: {t.latest_handshake}\n"
-                                 f"Transfer: ↓ {Fmt.bytes(t.rx_bytes)} · ↑ {Fmt.bytes(t.tx_bytes)}")
-                detail.setStyleSheet("color: palette(mid); font-size: 13px;")
-                lay.addWidget(detail)
-            elif c.running:
-                waiting = QLabel("Container is running; waiting for tunnel stats…")
-                waiting.setStyleSheet("color: palette(mid); font-size: 13px;")
-                lay.addWidget(waiting)
-            self.list.addItem(item)
-            self.list.setItemWidget(item, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            item.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            if self.session.vpn_error:
+                self.list.addItem(f"⚠ {self.session.vpn_error}")
+            if not self.session.vpn_containers:
+                self.list.addItem("No tunnels configured. Add a WireGuard config — your own, or one exported "
+                                   "from a VPN provider like ProtonVPN or Mullvad.")
+                return
+            for c in self.session.vpn_containers:
+                item = QListWidgetItem()
+                w = QWidget()
+                lay = QVBoxLayout(w)
+                head = QHBoxLayout()
+                dot = QLabel("●")
+                dot.setStyleSheet(f"color: {'green' if c.running else 'gray'};")
+                head.addWidget(dot)
+                head.addWidget(QLabel(c.name))
+                head.addStretch(1)
+                if c.running:
+                    btn = QPushButton("Stop")
+                    btn.clicked.connect(lambda _, cc=c: self.session.stop_vpn_tunnel(cc.name))
+                else:
+                    btn = QPushButton("Start")
+                    btn.clicked.connect(lambda _, cc=c: self.session.start_vpn_tunnel(cc.name))
+                head.addWidget(btn)
+                remove_btn = QPushButton("Remove")
+                remove_btn.clicked.connect(lambda _, cc=c: self._confirm_remove(cc))
+                head.addWidget(remove_btn)
+                lay.addLayout(head)
+                if c.tunnel:
+                    t = c.tunnel
+                    endpoint = t.endpoint or "–"
+                    detail = QLabel(f"Endpoint: {endpoint}    Handshake: {t.latest_handshake}\n"
+                                     f"Transfer: ↓ {Fmt.bytes(t.rx_bytes)} · ↑ {Fmt.bytes(t.tx_bytes)}")
+                    detail.setStyleSheet("color: palette(mid); font-size: 13px;")
+                    lay.addWidget(detail)
+                elif c.running:
+                    waiting = QLabel("Container is running; waiting for tunnel stats…")
+                    waiting.setStyleSheet("color: palette(mid); font-size: 13px;")
+                    lay.addWidget(waiting)
+                self.list.addItem(item)
+                self.list.setItemWidget(item, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                item.setSizeHint(_hint)
 
     def _confirm_remove(self, c):
         r = QMessageBox.warning(self, f"Remove “{c.name}”?",

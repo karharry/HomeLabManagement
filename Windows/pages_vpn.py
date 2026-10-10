@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QL
 import theme
 from core import Fmt
 from page_base import SessionPage
+from widgets_common import preserve_scroll
 from wireguard_ import is_valid_name
 from linux_session import LinuxSession
 
@@ -42,48 +43,49 @@ class VPNPage(SessionPage):
             self._refresh()
 
     def _refresh(self):
-        self.list.clear()
-        tunnels = self.session.wireguard_tunnels
-        if self.session.wireguard_error:
-            self.list.addItem(f"⚠ {self.session.wireguard_error}")
-        if not tunnels:
-            self.list.addItem("No tunnels configured. Add a WireGuard config — your own, or one exported "
-                               "from a VPN provider like ProtonVPN or Mullvad.")
-            return
-        for t in tunnels:
-            item = QListWidgetItem()
-            w = QWidget()
-            lay = QVBoxLayout(w)
-            head = QHBoxLayout()
-            dot = QLabel("●")
-            dot.setStyleSheet(f"color: {'green' if t.is_up else 'gray'};")
-            head.addWidget(dot)
-            head.addWidget(QLabel(t.name))
-            head.addStretch(1)
-            if t.is_up:
-                btn = QPushButton("Disconnect")
-                btn.clicked.connect(lambda _, tt=t: self.session.disconnect_wireguard_tunnel(tt.name))
-            else:
-                btn = QPushButton("Connect")
-                btn.clicked.connect(lambda _, tt=t: self.session.connect_wireguard_tunnel(tt.name))
-            head.addWidget(btn)
-            remove_btn = QPushButton("Remove")
-            remove_btn.clicked.connect(lambda _, tt=t: self._confirm_remove(tt))
-            head.addWidget(remove_btn)
-            lay.addLayout(head)
-            if t.is_up:
-                endpoint = t.endpoint or "–"
-                allowed = t.allowed_ips or "–"
-                detail = QLabel(f"Endpoint: {endpoint}    Allowed IPs: {allowed}\n"
-                                 f"Handshake: {t.latest_handshake}    Transfer: ↓ {Fmt.bytes(t.rx_bytes)} "
-                                 f"· ↑ {Fmt.bytes(t.tx_bytes)}")
-                detail.setStyleSheet("color: palette(mid); font-size: 13px;")
-                lay.addWidget(detail)
-            self.list.addItem(item)
-            self.list.setItemWidget(item, w)
-            _hint = w.sizeHint()
-            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
-            item.setSizeHint(_hint)
+        with preserve_scroll(self.list):
+            self.list.clear()
+            tunnels = self.session.wireguard_tunnels
+            if self.session.wireguard_error:
+                self.list.addItem(f"⚠ {self.session.wireguard_error}")
+            if not tunnels:
+                self.list.addItem("No tunnels configured. Add a WireGuard config — your own, or one exported "
+                                   "from a VPN provider like ProtonVPN or Mullvad.")
+                return
+            for t in tunnels:
+                item = QListWidgetItem()
+                w = QWidget()
+                lay = QVBoxLayout(w)
+                head = QHBoxLayout()
+                dot = QLabel("●")
+                dot.setStyleSheet(f"color: {'green' if t.is_up else 'gray'};")
+                head.addWidget(dot)
+                head.addWidget(QLabel(t.name))
+                head.addStretch(1)
+                if t.is_up:
+                    btn = QPushButton("Disconnect")
+                    btn.clicked.connect(lambda _, tt=t: self.session.disconnect_wireguard_tunnel(tt.name))
+                else:
+                    btn = QPushButton("Connect")
+                    btn.clicked.connect(lambda _, tt=t: self.session.connect_wireguard_tunnel(tt.name))
+                head.addWidget(btn)
+                remove_btn = QPushButton("Remove")
+                remove_btn.clicked.connect(lambda _, tt=t: self._confirm_remove(tt))
+                head.addWidget(remove_btn)
+                lay.addLayout(head)
+                if t.is_up:
+                    endpoint = t.endpoint or "–"
+                    allowed = t.allowed_ips or "–"
+                    detail = QLabel(f"Endpoint: {endpoint}    Allowed IPs: {allowed}\n"
+                                     f"Handshake: {t.latest_handshake}    Transfer: ↓ {Fmt.bytes(t.rx_bytes)} "
+                                     f"· ↑ {Fmt.bytes(t.tx_bytes)}")
+                    detail.setStyleSheet("color: palette(mid); font-size: 13px;")
+                    lay.addWidget(detail)
+                self.list.addItem(item)
+                self.list.setItemWidget(item, w)
+                _hint = w.sizeHint()
+                _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+                item.setSizeHint(_hint)
 
     def _confirm_remove(self, t):
         r = QMessageBox.warning(self, f"Remove “{t.name}”?",
