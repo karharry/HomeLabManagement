@@ -79,9 +79,11 @@ class VPNPage(SessionPage):
                                  f"· ↑ {Fmt.bytes(t.tx_bytes)}")
                 detail.setStyleSheet("color: palette(mid); font-size: 13px;")
                 lay.addWidget(detail)
-            item.setSizeHint(w.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, w)
+            _hint = w.sizeHint()
+            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+            item.setSizeHint(_hint)
 
     def _confirm_remove(self, t):
         r = QMessageBox.warning(self, f"Remove “{t.name}”?",

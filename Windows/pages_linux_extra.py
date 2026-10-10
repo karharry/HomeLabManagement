@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget, QMenu,
-                                 QWidget)
+                                 QWidget, QLineEdit, QListWidgetItem, QMessageBox)
 
 from page_base import SessionPage
 from widgets_common import Card
@@ -88,6 +88,118 @@ class PiholePage(SessionPage):
     def _open_admin(self):
         url = self.session.machine.webUrl or f"http://{self.session.machine.host}/admin/"
         QDesktopServices.openUrl(QUrl(url))
+
+
+class LocalDNSPage(SessionPage):
+    """Pi-hole's "Local DNS Records" — a quick stats recap up top, then the add/remove list."""
+
+    def __init__(self, session, parent=None):
+        super().__init__(session, parent)
+        lay = QVBoxLayout(self)
+
+        stats_row = QHBoxLayout()
+        self.blocking_card = Card("Blocking")
+        self.blocking_value = QLabel("–")
+        self.blocking_card.add(self.blocking_value)
+        self.queries_card = Card("Queries today")
+        self.queries_value = QLabel("–")
+        self.queries_card.add(self.queries_value)
+        self.blocked_card = Card("Blocked today")
+        self.blocked_value = QLabel("–")
+        self.blocked_card.add(self.blocked_value)
+        for c in (self.blocking_card, self.queries_card, self.blocked_card):
+            stats_row.addWidget(c)
+        lay.addLayout(stats_row)
+
+        lay.addWidget(QLabel("Local DNS Records"))
+        self.error_label = QLabel()
+        self.error_label.setStyleSheet("color: orange;")
+        lay.addWidget(self.error_label)
+        self.list = QListWidget()
+        lay.addWidget(self.list, 1)
+
+        add_row = QHBoxLayout()
+        self.domain_edit = QLineEdit()
+        self.domain_edit.setPlaceholderText("Domain, e.g. nas.lan")
+        self.ip_edit = QLineEdit()
+        self.ip_edit.setPlaceholderText("IP address, e.g. 192.168.1.10")
+        self.add_btn = QPushButton("Add")
+        self.add_btn.clicked.connect(self._add)
+        add_row.addWidget(self.domain_edit)
+        add_row.addWidget(self.ip_edit)
+        add_row.addWidget(self.add_btn)
+        lay.addLayout(add_row)
+
+        self.start_polling(15000)
+
+    def _tick(self):
+        self.session.refresh_pihole()
+        self.session.refresh_local_dns()
+
+    def _on_updated(self, topic):
+        if topic == "pihole":
+            self._refresh_stats()
+        if topic == "localdns":
+            self._refresh_records()
+
+    def _refresh_stats(self):
+        s = self.session.pihole_status
+        if not s:
+            return
+        self.blocking_value.setText("Enabled" if s.enabled else "Disabled")
+        self.blocking_value.setStyleSheet(f"color: {'green' if s.enabled else 'red'}; font-weight: 600;")
+        if s.queriesToday is not None:
+            self.queries_value.setText(str(s.queriesToday))
+        if s.blockedToday is not None:
+            self.blocked_value.setText(str(s.blockedToday))
+
+    def _refresh_records(self):
+        self.error_label.setText(self.session.local_dns_error or "")
+        self.list.clear()
+        records = self.session.local_dns_records
+        if not records:
+            self.list.addItem("No local DNS records configured.")
+            return
+        for r in records:
+            item = QListWidgetItem()
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(4, 2, 4, 2)
+            h.addWidget(QLabel(f"{r.domain}  →  {r.ip}"), 1)
+            remove_btn = QPushButton("Remove")
+            remove_btn.clicked.connect(lambda _, rr=r: self._confirm_remove(rr))
+            h.addWidget(remove_btn)
+            self.list.addItem(item)
+            self.list.setItemWidget(item, w)
+            _hint = w.sizeHint()
+            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+            item.setSizeHint(_hint)
+
+    def _add(self):
+        domain, ip = self.domain_edit.text().strip(), self.ip_edit.text().strip()
+        if not domain or not ip:
+            self.error_label.setText("Enter both a domain and an IP address.")
+            return
+        self.add_btn.setEnabled(False)
+
+        def done(err):
+            self.add_btn.setEnabled(True)
+            if err:
+                self.error_label.setText(err)
+            else:
+                self.error_label.setText("")
+                self.domain_edit.clear()
+                self.ip_edit.clear()
+                self.session.refresh_local_dns()
+
+        self.session.add_local_dns(domain, ip, done)
+
+    def _confirm_remove(self, r):
+        resp = QMessageBox.warning(self, f"Remove “{r.domain}”?",
+                                    f"This removes the local DNS record pointing {r.domain} to {r.ip}.",
+                                    QMessageBox.Ok | QMessageBox.Cancel)
+        if resp == QMessageBox.Ok:
+            self.session.remove_local_dns(r.domain, lambda err: self.session.refresh_local_dns())
 
 
 class PiKVMPage(SessionPage):

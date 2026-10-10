@@ -58,9 +58,11 @@ class TrueNASAppsPage(SessionPage):
                 st = QPushButton("Start")
                 st.clicked.connect(lambda _, aa=a: self.session.app_action(aa, "start"))
                 h.addWidget(st)
-            item.setSizeHint(w.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, w)
+            _hint = w.sizeHint()
+            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+            item.setSizeHint(_hint)
 
     def _install(self):
         dlg = InstallAppDialog(self.session, self)
@@ -325,9 +327,11 @@ class ContainersPage(SessionPage):
         for c in containers:
             item = QListWidgetItem()
             w = self._row_widget(c)
-            item.setSizeHint(w.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, w)
+            _hint = w.sizeHint()
+            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+            item.setSizeHint(_hint)
 
     def _row_widget(self, c) -> QWidget:
         w = QWidget()
@@ -426,6 +430,8 @@ class TrueNASContainersPage(ContainersPage):
             if c.truenas_app:
                 lbl = w.layout().itemAt(1).widget()
                 lbl.setText(f"[TrueNAS app: {c.truenas_app}] " + lbl.text())
-            item.setSizeHint(w.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, w)
+            _hint = w.sizeHint()
+            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+            item.setSizeHint(_hint)

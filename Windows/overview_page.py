@@ -126,9 +126,14 @@ class OverviewPage(QWidget):
         root = QVBoxLayout(self)
 
         row = QHBoxLayout()
+        row.setContentsMargins(4, 4, 4, 4)
+        row.setSpacing(8)
         row.addStretch(1)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh_now)
         add_btn = QPushButton("Add Machine")
         add_btn.clicked.connect(on_add)
+        row.addWidget(refresh_btn)
         row.addWidget(add_btn)
         root.addLayout(row)
 
@@ -175,3 +180,9 @@ class OverviewPage(QWidget):
     def _refresh_all(self):
         for c in self.cards.values():
             c.refresh()
+
+    def _refresh_now(self):
+        """Nudges every machine to poll right away, instead of waiting for its next scheduled tick."""
+        for s in self.model.ordered_sessions:
+            s.start()
+        self._refresh_all()

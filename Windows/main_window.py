@@ -30,6 +30,8 @@ from pages_windows_extra import (WindowsStartupPage, WindowsScheduledTasksPage, 
 from pages_mac import MacPowerPage
 from pages_mac_extra import MacStartupPage, MacSoftwarePage
 from pages_vpn import VPNPage
+from pages_opnsense import OPNsenseNetworkPage, OPNsenseDHCPPage, OPNsenseStaticHostsPage
+from pages_linux_extra import LocalDNSPage
 
 ROLE_KIND = Qt.UserRole
 ROLE_MACHINE_ID = Qt.UserRole + 1
@@ -95,11 +97,17 @@ def build_page(nav: NavItem, session) -> QWidget:
     if nav == NavItem.shares:
         return TrueNASSharesPage(session)
     if nav == NavItem.network:
-        return TrueNASNetworkPage(session)
+        return OPNsenseNetworkPage(session) if kind == MachineKind.opnsense else TrueNASNetworkPage(session)
     if nav == NavItem.data_protection:
         return TrueNASDataProtectionPage(session)
     if nav == NavItem.vpn:
         return TrueNASVPNPage(session) if kind == MachineKind.truenas else VPNPage(session)
+    if nav == NavItem.dhcp_leases:
+        return OPNsenseDHCPPage(session)
+    if nav == NavItem.local_dns:
+        return LocalDNSPage(session)
+    if nav == NavItem.dnsmasq_hosts:
+        return OPNsenseStaticHostsPage(session)
     return QLabel(f"Unimplemented page: {nav.value}")
 
 
@@ -165,6 +173,7 @@ class MainWindow(QMainWindow):
             self._show_machine(model.selected_id, NavItem.dashboard)
         else:
             self.stack.setCurrentWidget(self.overview)
+            self.toolbar.setVisible(False)
 
     # -- sidebar --
     def rebuild_sidebar(self):
@@ -251,7 +260,7 @@ class MainWindow(QMainWindow):
             self._show_machine(self.model.selected_id, NavItem.dashboard)
         else:
             self.stack.setCurrentWidget(self.overview)
-            self.connect_action.setVisible(False)
+            self.toolbar.setVisible(False)
 
     def _show_machine(self, machine_id: str, nav: NavItem):
         session = self.model.sessions.get(machine_id)
@@ -273,6 +282,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(page)
         self.stack.setCurrentWidget(page)
         self.setWindowTitle(f"HomeLab Management — {session.display_name}")
+        self.toolbar.setVisible(True)
 
         proto = session.kind.remote_desktop_protocol
         self.connect_action.setVisible(proto is not None)

@@ -36,6 +36,7 @@ class MachineKind(str, Enum):
     arch = "arch"
     windows = "windows"
     macos = "macos"
+    opnsense = "opnsense"
 
     @property
     def label(self) -> str:
@@ -46,6 +47,7 @@ class MachineKind(str, Enum):
             MachineKind.arch: "Arch Linux",
             MachineKind.windows: "Windows",
             MachineKind.macos: "macOS",
+            MachineKind.opnsense: "OPNsense",
         }[self]
 
     @property
@@ -58,15 +60,16 @@ class MachineKind(str, Enum):
             MachineKind.arch: "terminal",
             MachineKind.windows: "pc",
             MachineKind.macos: "mac",
+            MachineKind.opnsense: "firewall",
         }[self]
 
     @property
     def is_posix_shell(self) -> bool:
-        return self != MachineKind.truenas and self != MachineKind.windows
+        return self not in (MachineKind.truenas, MachineKind.windows, MachineKind.opnsense)
 
     @property
     def default_port(self) -> int:
-        return 443 if self == MachineKind.truenas else 22
+        return 443 if self in (MachineKind.truenas, MachineKind.opnsense) else 22
 
     @property
     def remote_desktop_protocol(self) -> Optional[str]:
@@ -91,13 +94,16 @@ class MachineKind(str, Enum):
             return [NavItem.dashboard, NavItem.storage, NavItem.power, NavItem.processes, NavItem.services,
                     NavItem.startup, NavItem.software, NavItem.updates, NavItem.logs, NavItem.users,
                     NavItem.console, NavItem.alerts]
+        if self == MachineKind.opnsense:
+            return [NavItem.dashboard, NavItem.storage, NavItem.network, NavItem.services,
+                    NavItem.dhcp_leases, NavItem.dnsmasq_hosts, NavItem.updates, NavItem.alerts]
         return [NavItem.dashboard, NavItem.storage, NavItem.processes, NavItem.services,
                 NavItem.scheduled_tasks, NavItem.updates, NavItem.logs, NavItem.users, NavItem.console,
                 NavItem.alerts]
 
 
 ALL_KINDS = [MachineKind.truenas, MachineKind.debian, MachineKind.raspios, MachineKind.arch,
-             MachineKind.windows, MachineKind.macos]
+             MachineKind.windows, MachineKind.macos, MachineKind.opnsense]
 
 
 class NavItem(str, Enum):
@@ -130,6 +136,9 @@ class NavItem(str, Enum):
     data_protection = "Data Protection"
     raspberry_pi = "Raspberry Pi"
     vpn = "VPN"
+    dhcp_leases = "DHCP Leases"
+    local_dns = "Local DNS"
+    dnsmasq_hosts = "Static Hosts"
 
     @property
     def icon(self) -> str:
@@ -142,6 +151,7 @@ class NavItem(str, Enum):
             NavItem.updates: "down", NavItem.startup: "power", NavItem.scheduled_tasks: "clock",
             NavItem.software: "box", NavItem.datasets: "folder", NavItem.shares: "drive", NavItem.network: "network",
             NavItem.data_protection: "lock", NavItem.raspberry_pi: "cpu", NavItem.vpn: "lock",
+            NavItem.dhcp_leases: "network", NavItem.local_dns: "folder", NavItem.dnsmasq_hosts: "folder",
         }[self]
 
 
@@ -271,7 +281,7 @@ class _Store:
     def forget_secrets(self, machine_id: str):
         with self._lock:
             secrets = self._data.setdefault("secrets", {})
-            for suffix in ("secret", "ssh", "fan", "protonuser", "proton"):
+            for suffix in ("secret", "ssh", "fan", "protonuser", "proton", "pihole"):
                 secrets.pop(f"{suffix}.{machine_id}", None)
             self._save()
 
@@ -338,6 +348,14 @@ class MachineStore:
     @staticmethod
     def set_fan_password(v: str, machine_id: str):
         store.set_secret(f"fan.{machine_id}", v)
+
+    @staticmethod
+    def pihole_password(machine_id: str) -> str:
+        return store.secret(f"pihole.{machine_id}")
+
+    @staticmethod
+    def set_pihole_password(v: str, machine_id: str):
+        store.set_secret(f"pihole.{machine_id}", v)
 
     @staticmethod
     def proton_user(machine_id: str) -> str:

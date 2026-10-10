@@ -70,9 +70,11 @@ class TrueNASVPNPage(SessionPage):
                 waiting = QLabel("Container is running; waiting for tunnel stats…")
                 waiting.setStyleSheet("color: palette(mid); font-size: 13px;")
                 lay.addWidget(waiting)
-            item.setSizeHint(w.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, w)
+            _hint = w.sizeHint()
+            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+            item.setSizeHint(_hint)
 
     def _confirm_remove(self, c):
         r = QMessageBox.warning(self, f"Remove “{c.name}”?",

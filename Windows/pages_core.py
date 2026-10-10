@@ -275,9 +275,11 @@ class ServicesPage(SessionPage):
                 menu.addAction("Restart", lambda s=svc: self.session.service_action(s, "restart"))
                 menu_btn.setMenu(menu)
                 lay.addWidget(menu_btn)
-            item.setSizeHint(w.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, w)
+            _hint = w.sizeHint()
+            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+            item.setSizeHint(_hint)
 
 
 class AlertsPage(SessionPage):
@@ -320,6 +322,8 @@ class AlertsPage(SessionPage):
                 btn = QPushButton("Dismiss")
                 btn.clicked.connect(lambda _, aa=a: self.session.dismiss_alert(aa))
                 lay.addWidget(btn)
-            item.setSizeHint(w.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, w)
+            _hint = w.sizeHint()
+            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+            item.setSizeHint(_hint)

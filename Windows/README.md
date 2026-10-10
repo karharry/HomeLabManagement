@@ -38,11 +38,16 @@ Mirrors the Swift app's structure rather than redesigning it:
   host key pinning, shared by every SSH-managed machine kind
 - `truenas_client.py` — a synchronous JSON-RPC-over-WebSocket client for
   TrueNAS SCALE's middleware API
-- `truenas.py`, `linux_session.py`, `windows_session.py`, `macos_session.py` —
-  one session class per managed machine kind, each owning the remote
-  script(s) it sends over SSH and the parser for what comes back
-- `docker_.py`, `wireguard_.py`, `tailscale_.py`, `fan_client.py` — parsers/
-  clients shared across machine kinds
+- `truenas.py`, `linux_session.py`, `windows_session.py`, `macos_session.py`,
+  `opnsense_session.py` — one session class per managed machine kind; the
+  SSH-based ones each own the remote script(s) they send and the parser for
+  what comes back, while OPNsense talks to its native REST API instead
+  (`opnsense_client.py`, API key/secret over HTTP Basic auth)
+- `docker_.py`, `wireguard_.py`, `tailscale_.py`, `fan_client.py`,
+  `pihole_client.py` — parsers/clients shared across machine kinds; the
+  Pi-hole client talks to v6's REST API (session-token auth) for live query
+  stats, since v6 removed the unauthenticated stats dump older versions
+  exposed over SSH
 - `machine_session.py` — the base class every session inherits: a dedicated
   background thread per machine (polling + on-demand actions), communicating
   back to the Qt main thread via signals

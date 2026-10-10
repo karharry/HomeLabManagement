@@ -39,9 +39,11 @@ class MacStartupPage(SessionPage):
             btn = QPushButton("Enable" if item.disabled else "Disable")
             btn.clicked.connect(lambda _, it=item: self.session.set_startup_enabled(it, it.disabled))
             h.addWidget(btn)
-            row.setSizeHint(w.sizeHint())
             self.list.addItem(row)
             self.list.setItemWidget(row, w)
+            _hint = w.sizeHint()
+            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+            row.setSizeHint(_hint)
 
 
 class MacSoftwarePage(SessionPage):

@@ -40,9 +40,11 @@ class WindowsStartupPage(SessionPage):
             btn = QPushButton("Enable" if item.disabled else "Disable")
             btn.clicked.connect(lambda _, it=item: self.session.set_startup(it, not it.disabled))
             h.addWidget(btn)
-            row.setSizeHint(w.sizeHint())
             self.list.addItem(row)
             self.list.setItemWidget(row, w)
+            _hint = w.sizeHint()
+            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+            row.setSizeHint(_hint)
 
 
 class WindowsScheduledTasksPage(SessionPage):
@@ -77,9 +79,11 @@ class WindowsScheduledTasksPage(SessionPage):
                 menu.addAction("Disable", lambda tt=t: self.session.scheduled_task_action(tt, "disable"))
             menu_btn.setMenu(menu)
             h.addWidget(menu_btn)
-            row.setSizeHint(w.sizeHint())
             self.list.addItem(row)
             self.list.setItemWidget(row, w)
+            _hint = w.sizeHint()
+            _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
+            row.setSizeHint(_hint)
 
 
 class WindowsSoftwarePage(SessionPage):

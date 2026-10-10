@@ -116,6 +116,27 @@ class MachineEditor(QDialog):
         tn_ssh_form.addRow("SSH Password", self.ssh_password_edit)
         tn_ssh_form.addRow(self.ssh_sudo)
 
+        # OPNsense section
+        self.opn_group = QGroupBox("OPNsense API")
+        opn_form = QFormLayout(self.opn_group)
+        self.opn_use_tls = QCheckBox("Use HTTPS")
+        self.opn_use_tls.setChecked(self.machine.useTLS)
+        self.opn_allow_self_signed = QCheckBox("Allow self-signed certificate")
+        self.opn_allow_self_signed.setChecked(self.machine.allowSelfSigned)
+        self.opn_key_edit = QLineEdit(self.machine.user)
+        self.opn_secret_edit = QLineEdit(self.secret)
+        self.opn_secret_edit.setEchoMode(QLineEdit.Password)
+        opn_form.addRow(self.opn_use_tls)
+        opn_form.addRow(self.opn_allow_self_signed)
+        opn_form.addRow("API Key", self.opn_key_edit)
+        opn_form.addRow("API Secret", self.opn_secret_edit)
+        opn_hint = QLabel("Generate a key under System → Access → Users → (your user) → "
+                           "API keys in the OPNsense web UI; downloading it there gives you both the key "
+                           "and the secret.")
+        opn_hint.setWordWrap(True)
+        opn_hint.setStyleSheet("color: palette(mid); font-size: 13px;")
+        opn_form.addRow(opn_hint)
+
         self.tn_fan_group = QGroupBox("Fan Control (optional — needs a ‘fanctl’ container)")
         tn_fan_form = QFormLayout(self.tn_fan_group)
         self.fan_port_spin = QSpinBox()
@@ -159,9 +180,18 @@ class MachineEditor(QDialog):
         self.weburl_edit = QLineEdit(self.machine.webUrl)
         self.weburl_edit.setPlaceholderText("https://192.168.1.20/")
         weburl_form.addRow("URL", self.weburl_edit)
+        self.pihole_password_edit = QLineEdit(MachineStore.pihole_password(existing.id) if existing else "")
+        self.pihole_password_edit.setEchoMode(QLineEdit.Password)
+        weburl_form.addRow("Pi-hole web password", self.pihole_password_edit)
+        pihole_hint = QLabel("Only needed if this is a Pi-hole machine on v6+ — v6 removed the old "
+                              "SSH-readable stats, so query counts need the web admin password (or an "
+                              "app password) to use Pi-hole's API instead. Leave blank otherwise.")
+        pihole_hint.setWordWrap(True)
+        pihole_hint.setStyleSheet("color: palette(mid); font-size: 13px;")
+        weburl_form.addRow(pihole_hint)
 
-        for w in (self.tn_group, self.tn_ssh_group, self.tn_fan_group, self.login_group, self.hint_label,
-                  self.lhm_group, self.weburl_group):
+        for w in (self.tn_group, self.tn_ssh_group, self.tn_fan_group, self.opn_group, self.login_group,
+                  self.hint_label, self.lhm_group, self.weburl_group):
             self.kind_container.addWidget(w)
 
         test_row = QHBoxLayout()
@@ -203,11 +233,13 @@ class MachineEditor(QDialog):
         if self.existing is None or self.existing.port == 0:
             self.port_spin.setValue(kind.default_port)
         is_tn = kind == MachineKind.truenas
+        is_opn = kind == MachineKind.opnsense
         self.tn_group.setVisible(is_tn)
         self.tn_ssh_group.setVisible(is_tn)
         self.tn_fan_group.setVisible(is_tn)
-        self.login_group.setVisible(not is_tn)
-        self.hint_label.setVisible(not is_tn)
+        self.opn_group.setVisible(is_opn)
+        self.login_group.setVisible(not is_tn and not is_opn)
+        self.hint_label.setVisible(not is_tn and not is_opn)
         self.lhm_group.setVisible(kind == MachineKind.windows)
         self.weburl_group.setVisible(kind in (MachineKind.raspios, MachineKind.arch, MachineKind.debian))
         hints = {
@@ -239,6 +271,10 @@ class MachineEditor(QDialog):
             m.sshUser = self.ssh_user_edit.text()
             m.sshSudo = self.ssh_sudo.isChecked()
             m.fanPort = self.fan_port_spin.value()
+        elif m.kind == MachineKind.opnsense:
+            m.useTLS = self.opn_use_tls.isChecked()
+            m.allowSelfSigned = self.opn_allow_self_signed.isChecked()
+            m.user = self.opn_key_edit.text()
         else:
             m.user = self.user_edit.text()
             m.useSudo = self.use_sudo.isChecked()
@@ -249,7 +285,12 @@ class MachineEditor(QDialog):
         return m
 
     def _collect_secret(self) -> str:
-        return self.tn_secret_edit.text() if self._current_kind() == MachineKind.truenas else self.secret_edit.text()
+        kind = self._current_kind()
+        if kind == MachineKind.truenas:
+            return self.tn_secret_edit.text()
+        if kind == MachineKind.opnsense:
+            return self.opn_secret_edit.text()
+        return self.secret_edit.text()
 
     def _test_connection(self):
         m = self._collect()
@@ -289,9 +330,14 @@ class MachineEditor(QDialog):
         if not m.host.strip():
             QMessageBox.warning(self, "Missing host", "Enter a host name or IP address.")
             return
-        if m.kind != MachineKind.truenas and not m.user.strip():
+        if m.kind == MachineKind.opnsense and not m.user.strip():
+            QMessageBox.warning(self, "Missing API key", "Enter the OPNsense API key.")
+            return
+        if m.kind not in (MachineKind.truenas, MachineKind.opnsense) and not m.user.strip():
             QMessageBox.warning(self, "Missing user", "Enter a user name.")
             return
         self.model.upsert(m, secret=self._collect_secret(), ssh_password=self.ssh_password_edit.text(),
                            fan_password=self.fan_password_edit.text())
+        if m.kind in (MachineKind.raspios, MachineKind.arch, MachineKind.debian):
+            MachineStore.set_pihole_password(self.pihole_password_edit.text(), m.id)
         self.accept()

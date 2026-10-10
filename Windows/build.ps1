@@ -13,6 +13,8 @@ if (-not (Test-Path ".venv")) {
 & .\.venv\Scripts\python.exe -m PyInstaller `
     --noconfirm --clean --onefile --windowed `
     --name HomeLabManagement `
+    --icon app_icon.ico `
+    --add-data "app_icon.ico;." `
     --collect-submodules paramiko `
     app.py
 

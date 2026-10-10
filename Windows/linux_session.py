@@ -15,6 +15,7 @@ from ssh_runner import SSHRunner, SSHSettings
 import docker_
 import tailscale_
 from wireguard_ import tunnels as wg_tunnels, is_valid_name as wg_valid_name
+from pihole_client import PiholeClient, PiholeError
 
 
 @dataclass
@@ -43,6 +44,12 @@ class PiholeStatus:
     blockedToday: Optional[int] = None
     percentBlocked: Optional[float] = None
     domainsOnBlocklist: Optional[int] = None
+
+
+@dataclass
+class PiholeDNSRecord:
+    ip: str
+    domain: str
 
 
 SAMPLE_SCRIPT = r"""
@@ -244,6 +251,20 @@ def _parse_processes(text: str) -> list[ProcessRow]:
     return out
 
 
+def _parse_local_dns(text: str) -> list[PiholeDNSRecord]:
+    """Parses /etc/pihole/custom.list — one "IP domain" pair per line, '#' comments allowed."""
+    out = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        out.append(PiholeDNSRecord(ip=parts[0], domain=parts[1]))
+    return sorted(out, key=lambda r: r.domain.lower())
+
+
 def _parse_pihole(text: str) -> Optional[PiholeStatus]:
     parts = text.split("---JSON---")
     status_text = parts[0] if parts else ""
@@ -347,6 +368,9 @@ class LinuxSession(MachineSession):
 
         self.pihole_status: Optional[PiholeStatus] = None
         self.pihole_error: Optional[str] = None
+        self._pihole_client: Optional[PiholeClient] = None
+        self.local_dns_records: list[PiholeDNSRecord] = []
+        self.local_dns_error: Optional[str] = None
         self.pikvm_root_rw: Optional[bool] = None
         self.pikvm_active: Optional[bool] = None
         self.tailscale_status = None
@@ -379,6 +403,7 @@ class LinuxSession(MachineSession):
                 extra.append(NavItem.containers)
             if self.has_pihole:
                 extra.append(NavItem.pihole)
+                extra.append(NavItem.local_dns)
             if self.has_pikvm:
                 extra.append(NavItem.pikvm)
             if self.has_tailscale:
@@ -473,11 +498,56 @@ class LinuxSession(MachineSession):
         def do():
             try:
                 t = self._runner.sh(PIHOLE_STATUS_SCRIPT, self._ssh())
-                self.pihole_status = _parse_pihole(t)
-                self.pihole_error = None if self.pihole_status else "Couldn't read Pi-hole stats (pihole -c -j)."
+                status = _parse_pihole(t)
             except Exception:
-                pass
+                status = None
+            password = MachineStore.pihole_password(self.machine.id)
+            if password:
+                # Pi-hole v6 dropped the unauthenticated JSON stats dump the plain-text path above
+                # relies on for query counts, so fetch those from the v6 REST API instead when a
+                # web admin password is configured for it. Enabled/disabled still comes from SSH
+                # above either way, since that keeps working across versions.
+                try:
+                    api_stats = self._fetch_pihole_api_stats(password)
+                    if status is None:
+                        status = PiholeStatus(enabled=api_stats.get("enabled", True))
+                    status.queriesToday = api_stats.get("queriesToday", status.queriesToday)
+                    status.blockedToday = api_stats.get("blockedToday", status.blockedToday)
+                    status.percentBlocked = api_stats.get("percentBlocked", status.percentBlocked)
+                    status.domainsOnBlocklist = api_stats.get("domainsOnBlocklist", status.domainsOnBlocklist)
+                    self.pihole_error = None
+                except PiholeError as e:
+                    self.pihole_error = str(e)
+            elif status is None:
+                self.pihole_error = ("Couldn't read Pi-hole stats over SSH. If this is Pi-hole v6, add its "
+                                      "web admin password in the Edit sheet — v6 needs the API for stats.")
+            else:
+                self.pihole_error = None
+            self.pihole_status = status
         self.submit(do, "pihole")
+
+    def _fetch_pihole_api_stats(self, password: str) -> dict:
+        if self._pihole_client is None:
+            self._pihole_client = PiholeClient(self.machine.host, password)
+        summary = self._pihole_client.get("stats/summary")
+        queries = summary.get("queries") or {}
+        gravity = summary.get("gravity") or {}
+        out = {}
+        if "total" in queries:
+            out["queriesToday"] = queries.get("total")
+        if "blocked" in queries:
+            out["blockedToday"] = queries.get("blocked")
+        if "percent_blocked" in queries:
+            out["percentBlocked"] = queries.get("percent_blocked")
+        if "domains_being_blocked" in gravity:
+            out["domainsOnBlocklist"] = gravity.get("domains_being_blocked")
+        try:
+            blocking = self._pihole_client.get("dns/blocking")
+            if "blocking" in blocking:
+                out["enabled"] = str(blocking["blocking"]).lower() == "enabled"
+        except PiholeError:
+            pass
+        return out
 
     def pihole_set_enabled(self, enabled: bool, duration: Optional[str] = None):
         def do():
@@ -490,6 +560,58 @@ class LinuxSession(MachineSession):
             t = self._runner.sh(PIHOLE_STATUS_SCRIPT, self._ssh())
             self.pihole_status = _parse_pihole(t)
         self.submit(do, "pihole")
+
+    # -- Pi-hole local DNS records --
+    # Uses Pi-hole's own `pihole -a hostrecord` CLI (documented, stable across v5/v6) for
+    # add/remove, and reads /etc/pihole/custom.list directly for listing (the file both versions
+    # use to back "Local DNS Records" in the admin UI).
+
+    def refresh_local_dns(self):
+        def do():
+            try:
+                t = self._runner.sh("cat /etc/pihole/custom.list 2>/dev/null", self._ssh(), sudo=True, merge=True)
+            except Exception as e:
+                self.local_dns_error = str(e)
+                return
+            self.local_dns_records = _parse_local_dns(t)
+            self.local_dns_error = None
+        self.submit(do, "localdns")
+
+    def add_local_dns(self, domain: str, ip: str, on_done):
+        def do():
+            domain_t, ip_t = domain.strip(), ip.strip()
+            if not domain_t or not ip_t:
+                on_done("Enter both a domain and an IP address.")
+                return
+            from ssh_runner import quote
+            try:
+                out = self._runner.sh(f"pihole -a hostrecord {quote(domain_t)} {quote(ip_t)}",
+                                       self._ssh(), sudo=True, merge=True)
+            except Exception as e:
+                on_done(str(e))
+                return
+            self._refresh_local_dns_sync()
+            on_done(None if "error" not in out.lower() else out)
+        self.submit(do, "localdns")
+
+    def remove_local_dns(self, domain: str, on_done):
+        def do():
+            from ssh_runner import quote
+            try:
+                out = self._runner.sh(f"pihole -a hostrecord {quote(domain)}", self._ssh(), sudo=True, merge=True)
+            except Exception as e:
+                on_done(str(e))
+                return
+            self._refresh_local_dns_sync()
+            on_done(None if "error" not in out.lower() else out)
+        self.submit(do, "localdns")
+
+    def _refresh_local_dns_sync(self):
+        try:
+            t = self._runner.sh("cat /etc/pihole/custom.list 2>/dev/null", self._ssh(), sudo=True, merge=True)
+        except Exception:
+            return
+        self.local_dns_records = _parse_local_dns(t)
 
     # -- PiKVM --
     def refresh_pikvm(self):

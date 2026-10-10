@@ -256,5 +256,8 @@ def make_session(machine: Machine) -> MachineSession:
     if machine.kind == MachineKind.windows:
         from windows_session import WindowsSession
         return WindowsSession(machine)
+    if machine.kind == MachineKind.opnsense:
+        from opnsense_session import OPNsenseSession
+        return OPNsenseSession(machine)
     from macos_session import MacSession
     return MacSession(machine)
