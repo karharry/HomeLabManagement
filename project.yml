@@ -9,7 +9,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     # Set your Apple Developer Team ID here (or pick it in Xcode > Signing & Capabilities)
     DEVELOPMENT_TEAM: H733G484XF
-    MARKETING_VERSION: "1.0"
+    MARKETING_VERSION: "1.3.0"
     CURRENT_PROJECT_VERSION: "1"
 packages:
   Citadel:
