@@ -1,22 +1,26 @@
 """Main window: sidebar (All Machines + per-machine nav) and detail pane. Mirrors App/ContentView.swift."""
 from __future__ import annotations
 
+import json
+import uuid
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget,
                                  QTreeWidgetItem, QStackedWidget, QToolBar, QPushButton, QLabel,
-                                 QMessageBox, QMenu, QApplication)
-from PySide6.QtGui import QAction, QColor
+                                 QMessageBox, QMenu, QApplication, QFileDialog)
+from PySide6.QtGui import QAction, QColor, QDesktopServices
 
-from core import NavItem, MachineKind, NAV_GROUP_OF
+from core import Machine, NavItem, MachineKind, NAV_GROUP_OF
 from app_model import AppModel
 from overview_page import OverviewPage
 from machine_editor import MachineEditor
 import remote_desktop
+import wol
+from update_check import UpdateCheck
 import theme
 
-from pages_core import DashboardPage, StoragePage, ProcessesPage, ServicesPage, AlertsPage
+from pages_core import HistoryPage, DashboardPage, StoragePage, ProcessesPage, ServicesPage, AlertsPage
 from pages_shared_extra import ConsolePage, UsersPage, LogsPage, UpdatesPage
 from pages_truenas import TrueNASAppsPage, TrueNASVMsPage, ContainersPage, TrueNASContainersPage
 from pages_truenas_extra import (TrueNASDatasetsPage, TrueNASSharesPage, TrueNASNetworkPage,
@@ -43,6 +47,8 @@ def build_page(nav: NavItem, session) -> QWidget:
     kind = session.kind
     if nav == NavItem.dashboard:
         return DashboardPage(session)
+    if nav == NavItem.history:
+        return HistoryPage(session)
     if nav == NavItem.storage:
         return StoragePage(session)
     if nav == NavItem.processes:
@@ -159,7 +165,11 @@ class MainWindow(QMainWindow):
         file_menu = menu_bar.addMenu("File")
         file_menu.addAction("Add Machine…", self._add_machine)
         file_menu.addSeparator()
+        file_menu.addAction("Export Machines…", self._export_machines)
+        file_menu.addAction("Import Machines…", self._import_machines)
+        file_menu.addSeparator()
         file_menu.addAction("Preferences…", self._show_preferences)
+        file_menu.addAction("Check for Updates…", lambda: self.check_updates(True))
 
         self._current_page: Optional[QWidget] = None
         self._current_machine_id: Optional[str] = None
@@ -260,6 +270,10 @@ class MainWindow(QMainWindow):
         if proto:
             label = "Connect via RDP" if proto == "rdp" else "Connect via Screen Sharing"
             menu.addAction(label, lambda: remote_desktop.connect(session.machine))
+        if session.machine.web_url:
+            menu.addAction("Open Web UI", lambda: QDesktopServices.openUrl(QUrl(session.machine.web_url)))
+        if session.machine.mac:
+            menu.addAction("Wake (Wake-on-LAN)", lambda: self._wake(session))
         menu.addSeparator()
         up_action = menu.addAction("Move Up", lambda: self._move(machine_id, True))
         up_action.setEnabled(self.model.can_move_up(machine_id))
@@ -268,6 +282,14 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction("Remove", lambda: self._remove_machine(session))
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _wake(self, session):
+        try:
+            wol.wake(session.machine.mac)
+        except (ValueError, OSError) as e:
+            QMessageBox.warning(self, "Wake-on-LAN failed", str(e))
+            return
+        self.statusBar().showMessage(f"Wake packet sent to {session.display_name}", 5000)
 
     def _move(self, machine_id, up: bool):
         if up:
@@ -346,6 +368,48 @@ class MainWindow(QMainWindow):
     def _open_machine(self, session):
         self.model.select(session.id)
 
+    def check_updates(self, verbose: bool):
+        """verbose: report "up to date"/errors too (menu click); otherwise only a found update shows (startup)."""
+        self._update_check = UpdateCheck()
+        def done(latest, url):
+            if latest.startswith("!"):
+                if verbose:
+                    QMessageBox.warning(self, "Update check failed", latest[1:])
+            elif latest:
+                if QMessageBox.question(self, "Update available",
+                                        f"Version {latest} is available. Open the download page?") == QMessageBox.Yes:
+                    QDesktopServices.openUrl(QUrl(url))
+            elif verbose:
+                QMessageBox.information(self, "Up to date", "You're running the latest version.")
+        self._update_check.result.connect(done)
+        self._update_check.start()
+
+    def _export_machines(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export machines", "homelab-machines.json", "JSON (*.json)")
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"machines": [m.to_dict() for m in self.model.machines]}, f, indent=2)
+            QMessageBox.information(self, "Exported", "Saved without passwords or API secrets — "
+                                    "re-enter those after importing on another PC.")
+
+    def _import_machines(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import machines", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                items = json.load(f)["machines"]
+            machines = [Machine.from_dict(d) for d in items]
+        except Exception as e:
+            QMessageBox.warning(self, "Import failed", f"That doesn't look like an exported machine list: {e}")
+            return
+        existing = {m.id for m in self.model.machines}
+        for m in machines:
+            if m.id in existing:
+                m.id = str(uuid.uuid4())  # never overwrite a machine (and its stored passwords) on import
+            self.model.upsert(m)
+        QMessageBox.information(self, "Imported", f"Added {len(machines)} machine(s). Edit each one to enter its password.")
+
     def _show_preferences(self):
         from settings_dialog import SettingsDialog
         SettingsDialog(self).exec()
@@ -361,6 +425,14 @@ class MainWindow(QMainWindow):
         dlg.exec()
         self.overview.rebuild()
         self.rebuild_sidebar()
+
+    def hideEvent(self, event):
+        self.model.set_window_hidden(True)
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        self.model.set_window_hidden(False)
+        super().showEvent(event)
 
     def closeEvent(self, event):
         if self.tray is not None:

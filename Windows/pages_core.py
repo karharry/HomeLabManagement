@@ -9,8 +9,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QScrollArea, QWidget,
                                  QPushButton, QMessageBox, QTableWidget, QTableWidgetItem,
                                  QHeaderView, QListWidget, QListWidgetItem, QLineEdit, QMenu,
-                                 QAbstractItemView)
+                                 QAbstractItemView, QComboBox)
 
+import history
 from core import Fmt, AlertItem
 from page_base import SessionPage
 from widgets_common import Card, MeterCard, UsageBar, Sparkline, GREEN, ORANGE, RED, GRAY, preserve_scroll
@@ -354,3 +355,41 @@ class AlertsPage(SessionPage):
                 _hint = w.sizeHint()
                 _hint.setHeight(_hint.height() + 10)  # headroom for descenders (g/y/p/j/q) that sizeHint() alone cut off on real Windows DPI scaling
                 item.setSizeHint(_hint)
+
+
+class HistoryPage(SessionPage):
+    """CPU / memory / network over the last 24 hours or 7 days, from the SQLite samples in history.py."""
+    RANGES = {"Last 24 hours": 86400, "Last 7 days": 7 * 86400}
+
+    def __init__(self, session, parent=None):
+        super().__init__(session, parent)
+        lay = QVBoxLayout(self)
+        self.range_combo = QComboBox()
+        self.range_combo.addItems(list(self.RANGES))
+        self.range_combo.currentIndexChanged.connect(self._refresh)
+        lay.addWidget(self.range_combo)
+        self.charts = {}
+        for key, title in (("cpu", "CPU"), ("mem", "Memory"), ("net", "Network")):
+            card = Card(title)
+            spark = Sparkline(height=90)
+            caption = QLabel("")
+            caption.setStyleSheet("color: palette(mid); font-size: 12px;")
+            card.body.addWidget(spark)
+            card.body.addWidget(caption)
+            lay.addWidget(card)
+            self.charts[key] = (spark, caption)
+        lay.addStretch(1)
+        self.start_polling(60000)
+
+    def _tick(self):
+        self._refresh()
+
+    def _refresh(self):
+        data = history.series(self.session.id, self.RANGES[self.range_combo.currentText()])
+        fmt = {"cpu": Fmt.percent, "mem": lambda v: Fmt.percent(v * 100), "net": Fmt.rate}
+        scale = {"cpu": 100.0, "mem": 1.0, "net": None}
+        for key, (spark, caption) in self.charts.items():
+            vals = data[key]
+            spark.set_values(vals, scale[key])
+            caption.setText(f"average {fmt[key](sum(vals) / len(vals))} · peak {fmt[key](max(vals))}"
+                            if vals else "No samples yet — one is saved per minute while the machine is online.")

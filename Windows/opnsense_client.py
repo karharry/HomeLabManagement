@@ -19,6 +19,8 @@ from typing import Any, Optional
 
 import requests
 
+import tls_pin
+
 
 class OPNsenseError(Exception):
     pass
@@ -32,6 +34,7 @@ class OPNsenseClient:
         self.auth = (api_key, api_secret)
         self.verify = not allow_self_signed
         self.timeout = timeout
+        self.host, self.port, self.pin = host, port, use_tls and allow_self_signed
 
     def get(self, path: str) -> Any:
         return self._send("GET", path)
@@ -42,8 +45,10 @@ class OPNsenseClient:
     def _send(self, method: str, path: str, json_body: Optional[dict] = None) -> Any:
         url = f"{self.base}/{path.lstrip('/')}"
         try:
-            resp = requests.request(method, url, auth=self.auth, verify=self.verify,
-                                     timeout=self.timeout, json=json_body if method == "POST" else None)
+            http = tls_pin.session(self.host, self.port) if self.pin else requests
+            resp = http.request(method, url, auth=self.auth, timeout=self.timeout,
+                                json=json_body if method == "POST" else None,
+                                **({} if self.pin else {"verify": self.verify}))
         except Exception as e:
             raise OPNsenseError(f"Couldn't reach {url}: {e}")
         if resp.status_code == 401:

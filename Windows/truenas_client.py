@@ -15,6 +15,8 @@ from typing import Any, Callable, Optional
 
 import websocket
 
+import tls_pin
+
 
 class TrueNASError(Exception):
     pass
@@ -48,6 +50,12 @@ class TrueNASClient:
                                                      enable_multithread=True)
         except Exception as e:
             raise TrueNASError(f"Couldn't connect to {host}:{port} — {e}")
+        if sslopt:
+            try:
+                tls_pin.check_der(host, port, self._ws.sock.getpeercert(binary_form=True))
+            except Exception as e:
+                self._ws.close()
+                raise TrueNASError(str(e))
         self._closed = False
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self._recv_thread.start()

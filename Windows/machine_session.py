@@ -14,6 +14,7 @@ signal emission to the main thread's event loop since the receiver (a QWidget) l
 """
 from __future__ import annotations
 
+import history
 import queue
 import threading
 import time
@@ -21,7 +22,7 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from core import Machine, MachineKind, ConnectionState, StorageItem, ServiceRow, ProcessRow, AlertItem, Fmt
+from core import store, Machine, MachineKind, ConnectionState, StorageItem, ServiceRow, ProcessRow, AlertItem, Fmt
 
 
 class MachineSession(QObject):
@@ -35,6 +36,7 @@ class MachineSession(QObject):
         super().__init__()
         self.machine = machine
         self.is_foreground = False
+        self.window_hidden = False
 
         self.state = ConnectionState(ConnectionState.DISCONNECTED)
         self.host_name = ""
@@ -56,6 +58,7 @@ class MachineSession(QObject):
         self.power_watts: Optional[float] = None
         self.extra_alerts: list[AlertItem] = []
         self.last_refresh = None
+        self.failed_since: Optional[float] = None  # monotonic time of the first failure in a row
         self.action_error_text: Optional[str] = None
 
         self.services: list[ServiceRow] = []
@@ -109,21 +112,25 @@ class MachineSession(QObject):
     @property
     def alerts(self) -> list[AlertItem]:
         a = list(self.extra_alerts)
-        if self.state.kind == ConnectionState.FAILED and self.last_refresh is not None:
+        offline_after = float(store.pref("alertOfflineMinutes", 0)) * 60
+        if (self.state.kind == ConnectionState.FAILED and self.last_refresh is not None
+                and self.failed_since is not None and time.monotonic() - self.failed_since >= offline_after):
             a.append(AlertItem(id="offline", level=AlertItem.CRITICAL,
                                 title=f"Can't reach {self.display_name}", detail=self.state.message))
+        storage_warn = float(store.pref("alertStoragePct", 85)) / 100
+        mem_warn = float(store.pref("alertMemPct", 92)) / 100
         for item in self.storage:
-            if item.used_fraction >= 0.85:
+            if item.used_fraction >= storage_warn:
                 a.append(AlertItem(
                     id=f"storage-{item.id}",
-                    level=AlertItem.CRITICAL if item.used_fraction >= 0.95 else AlertItem.WARNING,
+                    level=AlertItem.CRITICAL if item.used_fraction >= max(0.95, storage_warn) else AlertItem.WARNING,
                     title=f"{item.title} is {int(item.used_fraction * 100)}% full",
                     detail=f"{Fmt.bytes(item.size - item.used)} free"))
         for item in self.storage:
             if not item.healthy:
                 a.append(AlertItem(id=f"unhealthy-{item.id}", level=AlertItem.CRITICAL,
                                     title=f"{item.title}: {item.statusText}", detail=item.subtitle))
-        if self.mem_total > 0 and self.mem_used_fraction >= 0.92:
+        if self.mem_total > 0 and self.mem_used_fraction >= mem_warn:
             a.append(AlertItem(id="mem", level=AlertItem.WARNING,
                                 title=f"Memory is {int(self.mem_used_fraction * 100)}% used",
                                 detail=f"{Fmt.bytes(self.mem_total - self.mem_used)} available"))
@@ -161,6 +168,9 @@ class MachineSession(QObject):
             pass
         self.state = ConnectionState(ConnectionState.DISCONNECTED)
 
+    def poll_now(self):
+        self._queue.put("___POLL___")
+
     def submit(self, fn, topic: str = ""):
         """Runs fn() on this session's worker thread; emits updated(topic) when it returns (or errors)."""
         self._queue.put((fn, topic))
@@ -180,6 +190,8 @@ class MachineSession(QObject):
     def forget_host_key(self):
         from ssh_runner import forget_host_key
         forget_host_key(self.machine.host, self.effective_ssh_port)
+        import tls_pin
+        tls_pin.forget(self.machine.host, self.machine.port)
 
     def perform_action(self, out: str, success_contains: Optional[str] = None) -> bool:
         trimmed = (out or "").strip()
@@ -241,7 +253,9 @@ class MachineSession(QObject):
             if item == "___POLL___":
                 ok = self._run_poll()
                 failures = 0 if ok else failures + 1
-                base = 4.0 if self.is_foreground else 15.0
+                base = 4.0 if self.is_foreground and not self.window_hidden else 15.0
+                if self.window_hidden:
+                    base = 30.0  # nobody is watching; the tray only needs coarse status
                 delay = base if ok else min(failures * 5 + base, 60)
                 next_poll = time.monotonic() + delay
             else:
@@ -260,6 +274,11 @@ class MachineSession(QObject):
         except Exception as e:
             self.state = ConnectionState(ConnectionState.FAILED, str(e))
             ok = False
+        if ok:
+            self.failed_since = None
+            history.record(self)
+        elif self.failed_since is None:
+            self.failed_since = time.monotonic()
         self.updated.emit("poll")
         return ok
 

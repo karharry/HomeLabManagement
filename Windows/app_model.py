@@ -50,6 +50,12 @@ class AppModel(QObject):
             self.sessions[machine_id].start()
         self.selection_changed.emit()
 
+    def set_window_hidden(self, hidden: bool):
+        for s in self.sessions.values():
+            s.window_hidden = hidden
+            if not hidden:
+                s.poll_now()  # catch up immediately instead of waiting out the slow hidden interval
+
     def _mark_foreground(self):
         for s in self.sessions.values():
             s.is_foreground = (s.id == self.selected_id)

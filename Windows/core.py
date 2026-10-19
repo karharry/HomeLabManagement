@@ -1,8 +1,8 @@
 """Shared data model: Machine, MachineKind, settings store, NavItem, alerts, formatting.
 
 Mirrors the Swift app's Shared/MachineKind.swift, App/Machine.swift, App/MachineSession.swift,
-Shared/Models.swift. Secrets are plain text in settings.json beside the exe (no Keychain on Windows,
-and the app must stay a portable single file with no installs) instead of the macOS Keychain.
+Shared/Models.swift. Secrets live in Windows Credential Manager (the macOS Keychain's counterpart);
+settings.json only keeps them as a fallback if Credential Manager is unavailable.
 """
 from __future__ import annotations
 
@@ -14,6 +14,11 @@ import uuid as uuidlib
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional, Callable
+
+import keyring
+import keyring.errors
+
+KR_SERVICE = "HomeLabManagement"
 
 
 def app_dir() -> str:
@@ -104,7 +109,7 @@ class MachineKind(str, Enum):
             items = {NavItem.dashboard, NavItem.storage, NavItem.processes, NavItem.services,
                       NavItem.scheduled_tasks, NavItem.updates, NavItem.logs, NavItem.users, NavItem.console,
                       NavItem.alerts}
-        return sort_nav_items(items)
+        return sort_nav_items(items | {NavItem.history})
 
 
 ALL_KINDS = [MachineKind.truenas, MachineKind.debian, MachineKind.raspios, MachineKind.arch,
@@ -144,6 +149,7 @@ class NavItem(str, Enum):
     dhcp_leases = "DHCP Leases"
     local_dns = "Local DNS"
     dnsmasq_hosts = "Static Hosts"
+    history = "History"
 
     @property
     def icon(self) -> str:
@@ -157,6 +163,7 @@ class NavItem(str, Enum):
             NavItem.software: "box", NavItem.datasets: "folder", NavItem.shares: "drive", NavItem.network: "network",
             NavItem.data_protection: "lock", NavItem.raspberry_pi: "cpu", NavItem.vpn: "lock",
             NavItem.dhcp_leases: "network", NavItem.local_dns: "folder", NavItem.dnsmasq_hosts: "folder",
+            NavItem.history: "clock",
         }[self]
 
 
@@ -174,7 +181,7 @@ NAV_GROUPS: list[tuple[Optional[str], list["NavItem"]]] = [
     ("Network", [NavItem.network, NavItem.dhcp_leases, NavItem.dnsmasq_hosts, NavItem.local_dns,
                  NavItem.pihole, NavItem.tailscale, NavItem.vpn, NavItem.pikvm]),
     ("Data", [NavItem.datasets, NavItem.shares, NavItem.data_protection]),
-    ("System", [NavItem.processes, NavItem.services, NavItem.logs, NavItem.users, NavItem.console]),
+    ("System", [NavItem.history, NavItem.processes, NavItem.services, NavItem.logs, NavItem.users, NavItem.console]),
     (None, [NavItem.alerts]),
 ]
 
@@ -197,7 +204,7 @@ def sort_nav_items(items) -> list["NavItem"]:
 _DEFAULTS = dict(
     id=None, kind=MachineKind.debian, name="", host="", port=22, user="",
     useTLS=True, allowSelfSigned=True, usePassword=False, sshEnabled=False, sshPort=22, sshUser="",
-    sshSudo=True, fanPort=9595, useSudo=True, lhmPort=0, webUrl="",
+    sshSudo=True, fanPort=9595, useSudo=True, lhmPort=0, webUrl="", mac="",
 )
 
 
@@ -220,6 +227,7 @@ class Machine:
     useSudo: bool = True
     lhmPort: int = 0
     webUrl: str = ""
+    mac: str = ""  # for Wake-on-LAN
 
     @staticmethod
     def from_dict(d: dict) -> "Machine":
@@ -242,6 +250,15 @@ class Machine:
         return self.host if self.host else self.kind.label
 
     @property
+    def web_url(self) -> str:
+        """The admin page to open: the configured link, else the API host for kinds that are web-first."""
+        if self.webUrl.strip():
+            return self.webUrl.strip()
+        if self.kind in (MachineKind.truenas, MachineKind.opnsense) and self.host.strip():
+            return f"{'https' if self.useTLS else 'http'}://{self.host.strip()}:{self.port}"
+        return ""
+
+    @property
     def is_valid(self) -> bool:
         if not self.host.strip():
             return False
@@ -262,6 +279,8 @@ class _Store:
     def __init__(self):
         self._lock = threading.Lock()
         self._data = self._load()
+        self._secret_cache: dict[str, str] = {}
+        self._migrate_secrets()
 
     def _load(self) -> dict:
         if os.path.exists(SETTINGS_PATH):
@@ -299,26 +318,55 @@ class _Store:
             self._data["selected"] = v
             self._save()
 
-    # -- secrets (plain text; this machine's own settings file is the trust boundary) --
+    # -- secrets (Credential Manager; settings.json is only the fallback if that's unavailable) --
+    def _migrate_secrets(self):
+        secrets = self._data.get("secrets", {})
+        moved = False
+        for key in list(secrets):
+            try:
+                keyring.set_password(KR_SERVICE, key, secrets[key])
+            except Exception:
+                break
+            del secrets[key]
+            moved = True
+        if moved:
+            self._save()
+
     def secret(self, key: str) -> str:
         with self._lock:
-            return self._data.get("secrets", {}).get(key, "")
+            v = self._data.get("secrets", {}).get(key)
+            if v is not None:
+                return v
+            if key not in self._secret_cache:
+                try:
+                    self._secret_cache[key] = keyring.get_password(KR_SERVICE, key) or ""
+                except Exception:
+                    self._secret_cache[key] = ""
+            return self._secret_cache[key]
 
     def set_secret(self, key: str, value: str):
         with self._lock:
+            self._secret_cache[key] = value
             secrets = self._data.setdefault("secrets", {})
-            if value:
-                secrets[key] = value
-            else:
+            try:
+                if value:
+                    keyring.set_password(KR_SERVICE, key, value)
+                else:
+                    try:
+                        keyring.delete_password(KR_SERVICE, key)
+                    except keyring.errors.PasswordDeleteError:
+                        pass
                 secrets.pop(key, None)
+            except Exception:
+                if value:
+                    secrets[key] = value
+                else:
+                    secrets.pop(key, None)
             self._save()
 
     def forget_secrets(self, machine_id: str):
-        with self._lock:
-            secrets = self._data.setdefault("secrets", {})
-            for suffix in ("secret", "ssh", "fan", "protonuser", "proton", "pihole"):
-                secrets.pop(f"{suffix}.{machine_id}", None)
-            self._save()
+        for suffix in ("secret", "ssh", "fan", "protonuser", "proton", "pihole"):
+            self.set_secret(f"{suffix}.{machine_id}", "")
 
     # -- host key pinning (trust-on-first-use) --
     def pinned_host_key(self, key: str) -> Optional[str]:

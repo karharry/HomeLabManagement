@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (QDialog, QFormLayout, QVBoxLayout, QHBoxLayout, Q
 
 from core import Machine, MachineKind, ALL_KINDS, MachineStore, ConnectionState, store
 from machine_session import make_session
+import tls_pin
+import wol
 
 
 class _TestWorker(QThread):
@@ -190,8 +192,14 @@ class MachineEditor(QDialog):
         pihole_hint.setStyleSheet("color: palette(mid); font-size: 13px;")
         weburl_form.addRow(pihole_hint)
 
+        self.wol_group = QGroupBox("Wake-on-LAN (optional)")
+        wol_form = QFormLayout(self.wol_group)
+        self.mac_edit = QLineEdit(self.machine.mac)
+        self.mac_edit.setPlaceholderText("AA:BB:CC:DD:EE:FF")
+        wol_form.addRow("MAC address", self.mac_edit)
+
         for w in (self.tn_group, self.tn_ssh_group, self.tn_fan_group, self.opn_group, self.login_group,
-                  self.hint_label, self.lhm_group, self.weburl_group):
+                  self.hint_label, self.lhm_group, self.weburl_group, self.wol_group):
             self.kind_container.addWidget(w)
 
         test_row = QHBoxLayout()
@@ -208,7 +216,7 @@ class MachineEditor(QDialog):
         root.addLayout(test_row)
 
         if existing is not None:
-            forget_btn = QPushButton("Forget pinned SSH host key")
+            forget_btn = QPushButton("Forget pinned SSH host key / TLS certificate")
             forget_btn.clicked.connect(self._forget_host_key)
             root.addWidget(forget_btn)
 
@@ -261,6 +269,7 @@ class MachineEditor(QDialog):
         m.name = self.name_edit.text()
         m.host = self.host_edit.text()
         m.port = self.port_spin.value()
+        m.mac = self.mac_edit.text().strip()
         if m.kind == MachineKind.truenas:
             m.useTLS = self.use_tls.isChecked()
             m.allowSelfSigned = self.allow_self_signed.isChecked()
@@ -323,13 +332,20 @@ class MachineEditor(QDialog):
             from ssh_runner import forget_host_key
             port = self.ssh_port_spin.value() if self.existing.kind == MachineKind.truenas else self.port_spin.value()
             forget_host_key(self.host_edit.text(), port)
-            QMessageBox.information(self, "Forgotten", "The pinned SSH host key has been forgotten.")
+            tls_pin.forget(self.host_edit.text(), self.port_spin.value())
+            QMessageBox.information(self, "Forgotten", "The pinned SSH host key and TLS certificate have been forgotten.")
 
     def _save(self):
         m = self._collect()
         if not m.host.strip():
             QMessageBox.warning(self, "Missing host", "Enter a host name or IP address.")
             return
+        if m.mac:
+            try:
+                wol.parse_mac(m.mac)
+            except ValueError as e:
+                QMessageBox.warning(self, "Invalid MAC address", str(e))
+                return
         if m.kind == MachineKind.opnsense and not m.user.strip():
             QMessageBox.warning(self, "Missing API key", "Enter the OPNsense API key.")
             return

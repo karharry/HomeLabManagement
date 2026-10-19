@@ -9,3 +9,15 @@ DerivedData/
 # Tracking it alongside project.yml risks exactly the staleness that caused
 # the missing Hardened Runtime setting on the widget target.
 *.xcodeproj/
+
+# Windows build
+Windows/.venv/
+Windows/dist/
+Windows/build/
+Windows/*.spec
+Windows/version_info.txt
+Windows/settings.json
+Windows/history.db
+Windows/homelab.log*
+__pycache__/
+.pytest_cache/

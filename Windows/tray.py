@@ -7,8 +7,10 @@ status at a glance and jumps to it on click — flagged here, not silently dropp
 from __future__ import annotations
 
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor
+from PySide6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor
 from PySide6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
+
+from core import store, ConnectionState
 
 
 def _dot_icon(color: QColor) -> QIcon:
@@ -31,9 +33,15 @@ class TrayIcon(QSystemTrayIcon):
         self.setToolTip("HomeLab Management")
         self.activated.connect(self._on_activated)
 
+        self._menu = QMenu()
+        self.setContextMenu(self._menu)
+        self._machine_actions: dict[str, QAction] = {}
+        self._prev_online: dict[str, bool] = {}   # only machines whose first poll has finished
+        self._prev_alerts: dict[str, set] = {}
         self._timer = QTimer()
         self._timer.timeout.connect(self._refresh)
         self._timer.start(15000)
+        model.machines_changed.connect(self._refresh)
         self._refresh()
 
     def _on_activated(self, reason):
@@ -45,26 +53,52 @@ class TrayIcon(QSystemTrayIcon):
         self.main_window.raise_()
         self.main_window.activateWindow()
 
+    def _rebuild_menu(self, sessions):
+        self._menu.clear()
+        self._machine_actions.clear()
+        self._menu.addAction("Open HomeLab Management", self._show_window)
+        self._menu.addSeparator()
+        for s in sessions:
+            self._machine_actions[s.id] = self._menu.addAction("", lambda sid=s.id: self._select(sid))
+        self._menu.addSeparator()
+        self._menu.addAction("Quit", QApplication.quit)
+
+    def _notify(self, sessions):
+        """Toasts on offline/online transitions and newly raised alerts (not on startup)."""
+        if not store.pref("notifications", True):
+            return
+        for s in sessions:
+            state = s.state.kind
+            if state not in (ConnectionState.CONNECTED, ConnectionState.FAILED):
+                continue
+            online = state == ConnectionState.CONNECTED
+            ids = {a.id for a in s.alerts}
+            if s.id in self._prev_online:
+                if online != self._prev_online[s.id]:
+                    self.showMessage(s.display_name, "Back online" if online else f"Went offline: {s.state.message}",
+                                     QSystemTrayIcon.Information if online else QSystemTrayIcon.Warning, 6000)
+                else:
+                    for a in s.alerts:
+                        if a.id not in self._prev_alerts[s.id] and a.id != "offline":
+                            self.showMessage(f"{s.display_name}: {a.title}", a.detail, QSystemTrayIcon.Warning, 6000)
+            self._prev_online[s.id] = online
+            self._prev_alerts[s.id] = ids
+
     def _refresh(self):
         sessions = self.model.ordered_sessions
-        menu = QMenu()
-        menu.addAction("Open HomeLab Management", self._show_window)
-        menu.addSeparator()
+        if list(self._machine_actions) != [s.id for s in sessions]:
+            self._rebuild_menu(sessions)
+        self._notify(sessions)
         any_alert = False
         lines = []
         for s in sessions:
             alerts = s.alerts
-            if alerts:
-                any_alert = True
-            dot = "\U0001f7e2" if s.is_online else ("\U0001f534" if s.is_configured else "⚪")
-            label = f"{dot} {s.display_name}" + (f"  ({len(alerts)} alert(s))" if alerts else "")
+            any_alert = any_alert or bool(alerts)
+            dot = "🟢" if s.is_online else ("🔴" if s.is_configured else "⚪")
+            self._machine_actions[s.id].setText(
+                f"{dot} {s.display_name}" + (f"  ({len(alerts)} alert(s))" if alerts else ""))
             lines.append(f"{s.display_name}: " + ("online" if s.is_online else "offline")
                           + (f", {len(alerts)} alert(s)" if alerts else ""))
-            menu.addAction(label, lambda sid=s.id: self._select(sid))
-        menu.addSeparator()
-        quit_action = menu.addAction("Quit")
-        quit_action.triggered.connect(QApplication.quit)
-        self.setContextMenu(menu)
         self.setIcon(_dot_icon(QColor("orange") if any_alert else QColor("green" if sessions else "gray")))
         self.setToolTip("HomeLab Management\n" + ("\n".join(lines) if lines else "No machines yet"))
 
