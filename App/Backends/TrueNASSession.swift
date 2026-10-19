@@ -245,6 +245,8 @@ final class TrueNASSession: MachineSession, ConsoleHosting {
     var vmLive: [Int: TNVMLive] = [:]
     var vmStatsError: String?
     private let vmCollector = SSHRunner()
+    private var rapl = RAPLSampler()
+    private var lastPowerSample = Date.distantPast
     private var vmStatsTask: Task<Void, Never>?
     private var previousSamples: [Int: TNProcSample] = [:]
     private var vmDisks: [Int: [TNVMLive.DiskUse]] = [:]
@@ -286,9 +288,9 @@ final class TrueNASSession: MachineSession, ConsoleHosting {
     private static let vpnPrefix = "ix-homelab-vpn-"
 
     override var navItems: [NavItem] {
-        var items = machine.kind.navItems
-        if isSSHConfigured, let i = items.firstIndex(of: .alerts) { items.insert(.vpn, at: i) }
-        return items
+        var items = Set(machine.kind.navItems)
+        if isSSHConfigured { items.insert(.vpn) }
+        return sortNavItems(items)
     }
 
     private var secret: String { MachineStore.secret(for: machine.id) }
@@ -314,6 +316,12 @@ final class TrueNASSession: MachineSession, ConsoleHosting {
             client = c
         }
         return await refreshAll()
+    }
+
+    private func samplePower() async {
+        guard let out = try? await vmCollector.sh(RAPLSampler.script, sshSettings, sudo: true, merge: true) else { return }
+        if let w = rapl.watts(from: out) { powerWatts = w }
+        else if Double(out.trimmingCharacters(in: .whitespacesAndNewlines)) == nil { powerWatts = nil }
     }
 
     private func apply(_ rt: TNRealtime) {
@@ -361,12 +369,19 @@ final class TrueNASSession: MachineSession, ConsoleHosting {
         if let vms { self.vms = vms.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
         if let alerts { rawAlerts = alerts; extraAlerts = activeAlerts.map(\.asAlertItem) }
 
+        if isSSHConfigured, Date.now.timeIntervalSince(lastPowerSample) > 10 {
+            lastPowerSample = .now
+            // Off the poll path: an unreachable SSH must not hold up the API refresh.
+            Task { [weak self] in await self?.samplePower() }
+        }
+
         state = .connected
         lastRefresh = .now
         return true
     }
 
     override func closeBackend() async {
+        rapl.reset()
         let c = client
         client = nil
         await c?.disconnect()
@@ -734,9 +749,17 @@ final class TrueNASSession: MachineSession, ConsoleHosting {
     // MARK: Updates
 
     func refreshUpdateStatus() async {
-        guard let c = client, let d = try? await c.callRaw("update.check_available"), let obj = Self.json(d) as? [String: Any] else { return }
-        updateStatus = obj.tnStr("status")
-        updateVersion = obj.tnStr("version")
+        // update.check_available was removed in newer SCALE; update.status is shaped {code, status:{new_version}, error}.
+        guard let c = client, let d = try? await c.callRaw("update.status"), let obj = Self.json(d) as? [String: Any] else { return }
+        let code = obj.tnStr("code") ?? ""
+        let labels = ["NORMAL": "Up to date", "REBOOT_REQUIRED": "Reboot required to finish an update",
+                      "HAS_UPDATE": "Update available", "UPDATE_AVAILABLE": "Update available", "ERROR": "Error checking for updates"]
+        var status = labels[code] ?? code
+        let nv = (obj["status"] as? [String: Any])?["new_version"]
+        if let d = nv as? [String: Any] { updateVersion = d.tnStr("version") ?? d.tnStr("train") }
+        else { updateVersion = nv as? String }
+        if let err = obj["error"] as? String, !err.isEmpty { status += status.isEmpty ? err : " — \(err)" }
+        updateStatus = status
     }
 
     // MARK: Users & Groups

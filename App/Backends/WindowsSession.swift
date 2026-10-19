@@ -63,6 +63,11 @@ struct GPUAdapter: Sendable, Identifiable {
     }
 }
 
+extension NVInfo {
+    /// Parses `nvidia-smi --query-gpu=… --format=csv,noheader,nounits` output (shared with Linux hosts).
+    static func parse(_ text: String?) -> [NVInfo] { WinParse.nvidia(text) }
+}
+
 struct GPUProcess: Sendable, Identifiable {
     var pid: Int
     var name: String
@@ -132,18 +137,32 @@ struct WinCPUInfo: Sendable {
     var virtualization: Bool?
 }
 
+/// What the CPU / GPU pages read, so Linux hosts can reuse the same pages as Windows.
+@MainActor protocol CPUHosting: AnyObject {
+    var cpuInfo: WinCPUInfo { get }
+    var cores: [CoreLoad] { get }
+    var coreHistory: [String: [Double]] { get }
+}
+
+@MainActor protocol GPUHosting: AnyObject {
+    var gpus: [GPUAdapter] { get }
+    var gpuHistory: [String: GPUHistory] { get }
+    var gpuProcesses: [GPUProcess] { get }
+    func refreshGPUDetail() async
+}
+
 /// Manages a Windows machine over SSH + PowerShell.
 @MainActor @Observable
-final class WindowsSession: MachineSession, ConsoleHosting, UserHosting, WireGuardHosting {
+final class WindowsSession: MachineSession, CPUHosting, GPUHosting, ConsoleHosting, UserHosting, WireGuardHosting {
     private let runner = SSHRunner()
     private(set) var hasWireGuard = false
     var wireguardTunnels: [WireGuardTunnel] = []
     var wireguardError: String?
 
     override var navItems: [NavItem] {
-        var items = machine.kind.navItems
-        if hasWireGuard, let i = items.firstIndex(of: .alerts) { items.insert(.vpn, at: i) }
-        return items
+        var items = Set(machine.kind.navItems)
+        if hasWireGuard { items.insert(.vpn) }
+        return sortNavItems(items)
     }
 
     var gpus: [GPUAdapter] = []
@@ -245,6 +264,9 @@ final class WindowsSession: MachineSession, ConsoleHosting, UserHosting, WireGua
         let wmiSensors = WinParse.sensors(WinParse.rows(sec["SENS"]))
         let httpSensors = await fetchLHMSensorsOverHTTP()
         sensors = httpSensors ?? wmiSensors
+        // Sum of every Power sensor (CPU package, GPU…): not wall power, but the closest estimate without a meter.
+        let watts = sensors.filter { $0.type == "Power" }.map(\.value)
+        powerWatts = watts.isEmpty ? nil : watts.reduce(0, +)
         lhmHTTPWorking = machine.lhmPort > 0 ? (httpSensors != nil) : nil
 
         gpus = WinParse.gpus(controllers: WinParse.rows(sec["GPUS"]), engines: WinParse.rows(sec["GPUENG"]),
@@ -525,7 +547,7 @@ private enum WinScripts {
     /// Everything that runs at sign-in: Run keys, Startup folders and logon/boot scheduled tasks, with their enabled state.
     static let startup = prelude + "\n" + #"""
     $ap='\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\'
-    function Dis($path,$name){$v=Get-ItemPropertyValue -LiteralPath $path -Name $name -ErrorAction SilentlyContinue;[bool]($v -and ($v[0] -band 1))}
+    function Dis($path,$name){try{$v=Get-ItemPropertyValue -LiteralPath $path -Name $name -ErrorAction Stop}catch{$v=$null};[bool]($v -and ($v[0] -band 1))}
     function Exe($c){$c=[Environment]::ExpandEnvironmentVariables($c);if($c -match '^\s*"([^"]+)"'){$matches[1]}elseif($c -match '^\s*(.+?\.(exe|bat|cmd|com|lnk|msc))'){$matches[1]}else{($c.Trim() -split ' ')[0]}}
     function Pub($c){$p=Exe $c;if($p -and (Test-Path -LiteralPath $p)){$i=(Get-Item -LiteralPath $p).VersionInfo;if($i.CompanyName){$i.CompanyName.Trim()}elseif($i.ProductName){$i.ProductName.Trim()}}}
     $o=@()
@@ -695,7 +717,7 @@ private enum WinParse {
             if let id = n.SensorId, !id.isEmpty {
                 let parts = id.split(separator: "/").map(String.init)
                 if parts.count >= 2, let type = typeName(parts[parts.count - 2]),
-                   let v = (n.Value ?? "").split(separator: " ").first.flatMap({ Double($0) }), v.isFinite {
+                   let v = (n.Value ?? "").split(separator: " ").first.flatMap({ Double($0.replacingOccurrences(of: ",", with: ".")) }), v.isFinite {
                     out.append(HWSensor(name: n.Text ?? id, type: type, value: v, identifier: id))
                 }
             }

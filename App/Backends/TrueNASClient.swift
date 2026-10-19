@@ -32,7 +32,7 @@ struct TrueNASConnectionConfig: Sendable, Equatable {
     }
 }
 
-private final class TrustDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+final class TrustDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
     let allowSelfSigned: Bool
     init(allowSelfSigned: Bool) { self.allowSelfSigned = allowSelfSigned }
 

@@ -14,9 +14,9 @@ extension MachineKind {
         }
     }
 
-    /// Pages shown for this machine kind, in order (data, not a fixed enum — mirrors core.py's per-kind nav list).
+    /// Pages shown for this machine kind (membership only — `sortNavItems` places them in the canonical grouped order).
     var navItems: [NavItem] {
-        switch self {
+        let items: [NavItem] = switch self {
         case .truenas:
             [.dashboard, .storage, .datasets, .shares, .network, .apps, .vms, .containers, .services,
              .dataProtection, .fan, .updates, .users, .console, .alerts]
@@ -26,9 +26,12 @@ extension MachineKind {
         case .macos:
             [.dashboard, .storage, .power, .processes, .services, .startup, .software, .updates,
              .logs, .users, .console, .alerts]
+        case .opnsense:
+            [.dashboard, .storage, .network, .services, .dhcpLeases, .dnsmasqHosts, .updates, .alerts]
         default:
             [.dashboard, .storage, .processes, .services, .scheduledTasks, .updates, .logs, .users, .console, .alerts]
         }
+        return sortNavItems(items)
     }
 }
 
@@ -132,12 +135,17 @@ enum MachineStore {
     static func protonPassword(for id: UUID) -> String { Keychain.get("proton.\(id.uuidString)") }
     static func setProtonPassword(_ v: String, for id: UUID) { Keychain.set(v, for: "proton.\(id.uuidString)") }
 
+    /// Pi-hole v6 web admin password (its REST API replaced the SSH-readable stats).
+    static func piholePassword(for id: UUID) -> String { Keychain.get("pihole.\(id.uuidString)") }
+    static func setPiholePassword(_ v: String, for id: UUID) { Keychain.set(v, for: "pihole.\(id.uuidString)") }
+
     static func forgetSecrets(for id: UUID) {
         Keychain.remove("secret.\(id.uuidString)")
         Keychain.remove("ssh.\(id.uuidString)")
         Keychain.remove("fan.\(id.uuidString)")
         Keychain.remove("protonuser.\(id.uuidString)")
         Keychain.remove("proton.\(id.uuidString)")
+        Keychain.remove("pihole.\(id.uuidString)")
     }
 
     static var selectedID: UUID? {

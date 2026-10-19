@@ -2,7 +2,7 @@
 
 A native app — for **macOS** and **Windows** — for monitoring and managing a home
 lab: TrueNAS SCALE, Linux (Debian/Ubuntu, Raspberry Pi OS, Arch), Windows, Mac,
-and (Windows build only, for now) OPNsense machines, all from one sidebar. Pick
+and OPNsense machines, all from one sidebar. Pick
 whichever platform runs on the computer you want the app itself to live on.
 
 > **Project status:** This is a personal tool I built for my own home lab and
@@ -21,7 +21,7 @@ whichever platform runs on the computer you want the app itself to live on.
 | Install | Homebrew cask, or a signed `.app` | Single portable `.exe`, no installer |
 | Desktop widgets | Yes (WidgetKit) | No direct equivalent — a system tray icon shows status instead |
 | Credential storage | macOS Keychain | Plain-text `settings.json` beside the exe |
-| OPNsense support | Not yet | Yes — native REST API |
+| OPNsense support | Yes — native REST API | Yes — native REST API |
 
 Everything else — which machine kinds you can add, what each one's pages show,
 VPN/fan-control/console/etc. — is the same app design, independently
@@ -42,7 +42,7 @@ implemented per platform. Both are covered below.
   software, updates, event log, users, console
 - **macOS** (as a managed target): power & thermal, startup items, installed
   software, updates (softwareupdate + Homebrew), logs, users, console
-- **OPNsense** (Windows build only, for now): CPU/memory/storage, network
+- **OPNsense**: CPU/memory/storage, network
   interfaces, services, DHCP leases, static DHCP/DNS host management
   (Dnsmasq), firmware update status — managed over OPNsense's native REST API
   rather than SSH

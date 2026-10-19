@@ -36,15 +36,11 @@ final class MacSession: MachineSession, ContainerHosting, ConsoleHosting, UserHo
     var consoleUnavailableReason: String { "" }
 
     override var navItems: [NavItem] {
-        var items = machine.kind.navItems
-        if let i = items.firstIndex(of: .alerts) {
-            var extra: [NavItem] = []
-            if hasDocker { extra.append(.containers) }
-            if hasTailscale { extra.append(.tailscale) }
-            if hasWireGuard { extra.append(.vpn) }
-            items.insert(contentsOf: extra, at: i)
-        }
-        return items
+        var items = Set(machine.kind.navItems)
+        if hasDocker { items.insert(.containers) }
+        if hasTailscale { items.insert(.tailscale) }
+        if hasWireGuard { items.insert(.vpn) }
+        return sortNavItems(items)
     }
 
     private var ssh: SSHSettings {

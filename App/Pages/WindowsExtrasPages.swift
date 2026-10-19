@@ -4,7 +4,7 @@ struct WindowsCPUPage: View {
     @Environment(MachineSession.self) private var session
 
     var body: some View {
-        if let w = session as? WindowsSession {
+        if let w = session as? any CPUHosting {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -13,7 +13,7 @@ struct WindowsCPUPage: View {
                     }
                     Grid(alignment: .top, horizontalSpacing: 12, verticalSpacing: 12) {
                         GridRow {
-                            MeterCard(title: "Utilization", value: w.cpuPercent, caption: "")
+                            MeterCard(title: "Utilization", value: session.cpuPercent, caption: "")
                             Card(title: "Cache") {
                                 StatRow(label: "L2", value: w.cpuInfo.l2KB > 0 ? Fmt.bytes(w.cpuInfo.l2KB * 1024) : "–")
                                 StatRow(label: "L3", value: w.cpuInfo.l3KB > 0 ? Fmt.bytes(w.cpuInfo.l3KB * 1024) : "–")
@@ -24,7 +24,7 @@ struct WindowsCPUPage: View {
                             }
                         }
                     }
-                    Card(title: "Utilization history") { Sparkline(values: w.cpuHistory, maxValue: 100, height: 100) }
+                    Card(title: "Utilization history") { Sparkline(values: session.cpuHistory, maxValue: 100, height: 100) }
                     Card(title: "Logical processors") {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 10)], spacing: 10) {
                             ForEach(Array(w.cores.enumerated()), id: \.element.id) { i, c in
@@ -56,7 +56,7 @@ struct WindowsGPUPage: View {
     @Environment(MachineSession.self) private var session
 
     var body: some View {
-        if let w = session as? WindowsSession {
+        if let w = session as? any GPUHosting {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if w.gpus.isEmpty {
@@ -83,7 +83,7 @@ struct WindowsGPUPage: View {
         } else { ProgressView() }
     }
 
-    private func adapter(_ w: WindowsSession, _ g: GPUAdapter) -> some View {
+    private func adapter(_ w: any GPUHosting, _ g: GPUAdapter) -> some View {
         let h = w.gpuHistory[g.id] ?? GPUHistory()
         return VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {

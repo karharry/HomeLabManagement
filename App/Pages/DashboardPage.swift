@@ -21,6 +21,12 @@ struct DashboardPage: View {
                         if s.gpuPercent != nil {
                             MeterCard(title: "GPU", value: s.gpuPercent, caption: "")
                         }
+                        if let w = s.powerWatts {
+                            Card(title: "Power") {
+                                Text(String(format: "%.1f W", w)).font(.system(size: 30, weight: .semibold, design: .rounded))
+                                Text("estimate, not wall power").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                         Card(title: s.kind == .truenas ? "Pools" : "Storage") {
                             ForEach(s.storage.prefix(3)) { item in
                                 VStack(alignment: .leading, spacing: 2) {

@@ -24,6 +24,8 @@ targets:
       - target: HomeLabWidgets
         embed: true
       - package: Citadel
+    scheme:
+      testTargets: [HomeLabManagementTests]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.karharry.homelabmanagement
@@ -87,6 +89,16 @@ targets:
           - CFBundleURLSchemes: [homelabmanagement]
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+  HomeLabManagementTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [Tests]
+    dependencies:
+      - target: HomeLabManagement
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.karharry.homelabmanagement.tests
   HomeLabWidgets:
     type: app-extension
     platform: macOS

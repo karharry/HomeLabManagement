@@ -14,6 +14,7 @@ struct MachineEditor: View {
     @State private var secret = ""
     @State private var sshPassword = ""
     @State private var fanPassword = ""
+    @State private var piholePassword = ""
     @State private var testResult: String?
     @State private var testing = false
 
@@ -23,6 +24,7 @@ struct MachineEditor: View {
         if let existing {
             _secret = State(initialValue: MachineStore.secret(for: existing.id))
             _fanPassword = State(initialValue: MachineStore.fanPassword(for: existing.id))
+            _piholePassword = State(initialValue: MachineStore.piholePassword(for: existing.id))
         }
     }
 
@@ -63,6 +65,15 @@ struct MachineEditor: View {
                     TextField("Fan Controller Port", value: $machine.fanPort, formatter: NumberFormatter())
                     SecureField("Fan Controller Password", text: $fanPassword)
                 }
+            } else if machine.kind == .opnsense {
+                Section("OPNsense API") {
+                    Toggle("Use HTTPS", isOn: $machine.useTLS)
+                    Toggle("Allow self-signed certificate", isOn: $machine.allowSelfSigned)
+                    TextField("API Key", text: $machine.user)
+                    SecureField("API Secret", text: $secret)
+                    Text("Generate a key under System \u{2192} Access \u{2192} Users \u{2192} (your user) \u{2192} API keys in the OPNsense web UI; downloading it there gives you both the key and the secret.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             } else {
                 Section("Login") {
                     TextField("User", text: $machine.user)
@@ -84,6 +95,9 @@ struct MachineEditor: View {
             if machine.kind == .raspios || machine.kind == .arch || machine.kind == .debian {
                 Section("Web UI (optional — Pi-hole / PiKVM admin link)") {
                     TextField("URL", text: $machine.webUrl, prompt: Text("https://192.168.1.20/"))
+                    SecureField("Pi-hole web password", text: $piholePassword)
+                    Text("Only needed for Pi-hole v6+: v6 removed the SSH-readable stats, so query counts and Local DNS use Pi-hole's API with the web admin password (or an app password). Leave blank otherwise.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
 
@@ -101,13 +115,14 @@ struct MachineEditor: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 520)
+        .frame(width: 460, height: 560)
         .navigationTitle(existing == nil ? "Add Machine" : "Edit Machine")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
-                    model.upsert(machine, secret: secret, sshPassword: sshPassword, fanPassword: fanPassword)
+                    model.upsert(machine, secret: secret, sshPassword: sshPassword, fanPassword: fanPassword,
+                                 piholePassword: [.raspios, .arch, .debian].contains(machine.kind) ? piholePassword : nil)
                     dismiss()
                 }.disabled(!machine.isValid)
             }

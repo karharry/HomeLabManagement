@@ -44,10 +44,11 @@ final class AppModel {
     }
 
     /// Adds a new machine, or updates an existing one (reconnecting it if its settings changed).
-    func upsert(_ machine: Machine, secret: String, sshPassword: String = "", fanPassword: String = "") {
+    func upsert(_ machine: Machine, secret: String, sshPassword: String = "", fanPassword: String = "", piholePassword: String? = nil) {
         MachineStore.setSecret(secret, for: machine.id)
         if !sshPassword.isEmpty || machine.sshEnabled { MachineStore.setSSHPassword(sshPassword, for: machine.id) }
         if !fanPassword.isEmpty { MachineStore.setFanPassword(fanPassword, for: machine.id) }
+        if let piholePassword { MachineStore.setPiholePassword(piholePassword, for: machine.id) }
         if let i = machines.firstIndex(where: { $0.id == machine.id }) {
             let oldKind = machines[i].kind
             machines[i] = machine

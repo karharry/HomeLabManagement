@@ -11,7 +11,7 @@ struct OverviewPage: View {
             if model.orderedSessions.isEmpty {
                 VStack(spacing: 12) {
                     ContentUnavailableView("No machines yet", systemImage: "server.rack",
-                        description: Text("Add a TrueNAS, Linux, Windows, or Mac machine to get started."))
+                        description: Text("Add a TrueNAS, Linux, Windows, Mac, or OPNsense machine to get started."))
                     Button("Add Machine…") { sheet = .add }
                 }.padding(40)
             } else {
@@ -24,6 +24,7 @@ struct OverviewPage: View {
         }
         .navigationTitle("All Machines")
         .toolbar {
+            ToolbarItem { Button { model.orderedSessions.forEach { $0.start() } } label: { Label("Refresh", systemImage: "arrow.clockwise") } }
             ToolbarItem { Button { sheet = .add } label: { Label("Add Machine", systemImage: "plus") } }
         }
         .sheet(item: $sheet) { sh in

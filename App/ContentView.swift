@@ -70,7 +70,12 @@ struct ContentView: View {
                         Button("Remove", role: .destructive) { model.remove(s.id) }
                     }
                     if model.selectedID == s.id {
-                        ForEach(s.navItems) { item in
+                        let items = s.navItems
+                        ForEach(Array(items.enumerated()), id: \.element) { idx, item in
+                            if let g = item.group, g != (idx > 0 ? items[idx - 1].group : nil) {
+                                Text(g.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                                    .padding(.leading, 12).padding(.top, 6)
+                            }
                             Button { selection = item } label: {
                                 Label(item.rawValue, systemImage: item.icon)
                                     .badge(badgeCount(item, s))
@@ -101,7 +106,7 @@ struct ContentView: View {
             else if let tn = s as? TrueNASSession { tn.containers.count }
             else { 0 }
         case .apps: (s as? TrueNASSession)?.apps.count ?? 0
-        case .vms: (s as? TrueNASSession)?.vms.count ?? 0
+        case .vms: (s as? TrueNASSession)?.vms.count ?? (s as? LinuxSession)?.vms.count ?? 0
         case .software:
             if let w = s as? WindowsSession { w.software.count }
             else if let m = s as? MacSession { m.software.count }
@@ -120,7 +125,7 @@ struct ContentView: View {
         case .services: ServicesPage()
         case .alerts: AlertsPage()
         case .apps: TrueNASAppsPage()
-        case .vms: TrueNASVMsPage()
+        case .vms: s.kind == .truenas ? AnyView(TrueNASVMsPage()) : AnyView(LinuxVMsPage())
         case .containers:
             if s.kind == .truenas { TrueNASContainersPage() } else { ContainersPage() }
         case .fan: TrueNASFanPage()
@@ -149,7 +154,10 @@ struct ContentView: View {
             if s.kind == .windows { WindowsSoftwarePage() } else { MacSoftwarePage() }
         case .datasets: TrueNASDatasetsPage()
         case .shares: TrueNASSharesPage()
-        case .network: TrueNASNetworkPage()
+        case .network: s.kind == .opnsense ? AnyView(OPNsenseNetworkPage()) : AnyView(TrueNASNetworkPage())
+        case .dhcpLeases: OPNsenseDHCPPage()
+        case .dnsmasqHosts: OPNsenseStaticHostsPage()
+        case .localDNS: LocalDNSPage()
         case .dataProtection: TrueNASDataProtectionPage()
         case .vpn:
             if s.kind == .truenas { TrueNASVPNPage() } else { VPNPage() }

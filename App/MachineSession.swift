@@ -18,6 +18,7 @@ enum NavItem: String, Identifiable, Hashable, CaseIterable {
     case datasets = "Datasets & Snapshots", shares = "Shares", network = "Network", dataProtection = "Data Protection"
     case raspberryPi = "Raspberry Pi"
     case vpn = "VPN"
+    case dhcpLeases = "DHCP Leases", localDNS = "Local DNS", dnsmasqHosts = "Static Hosts"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -50,9 +51,33 @@ enum NavItem: String, Identifiable, Hashable, CaseIterable {
         case .dataProtection: "lock.shield"
         case .raspberryPi: "cpu"
         case .vpn: "lock.shield.fill"
+        case .dhcpLeases: "list.bullet.rectangle"
+        case .localDNS: "text.book.closed"
+        case .dnsmasqHosts: "pin"
         }
     }
     var urlName: String { rawValue.lowercased().replacingOccurrences(of: " ", with: "") }
+}
+
+/// Canonical sidebar grouping/order shared by every machine kind: each kind shows a subset, always in
+/// this relative order, so the sidebar reads the same everywhere. Dashboard and Alerts stay ungrouped.
+let navGroups: [(title: String?, items: [NavItem])] = [
+    (nil, [.dashboard]),
+    ("Hardware", [.storage, .cpu, .gpu, .sensors, .power, .fan, .raspberryPi]),
+    ("Software", [.apps, .vms, .containers, .startup, .software, .scheduledTasks, .updates]),
+    ("Network", [.network, .dhcpLeases, .dnsmasqHosts, .localDNS, .pihole, .tailscale, .vpn, .pikvm]),
+    ("Data", [.datasets, .shares, .dataProtection]),
+    ("System", [.processes, .services, .logs, .users, .console]),
+    (nil, [.alerts]),
+]
+
+func sortNavItems(_ items: some Sequence<NavItem>) -> [NavItem] {
+    let s = Set(items)
+    return navGroups.flatMap(\.items).filter(s.contains)
+}
+
+extension NavItem {
+    var group: String? { navGroups.first { $0.items.contains(self) }?.title }
 }
 
 /// Generalized storage unit: a ZFS pool, a Windows volume, or a Linux/macOS filesystem.
@@ -128,6 +153,8 @@ class MachineSession: Identifiable {
     var netRxRate: Double?     // bytes/sec
     var netTxRate: Double?     // bytes/sec
     var extraAlerts: [AlertItem] = []
+    /// Watts, where the kind can read it (LibreHardwareMonitor Power sensors, Intel RAPL). nil = no data.
+    var powerWatts: Double?
     var lastRefresh: Date?
     var actionError: String?
 
@@ -240,6 +267,7 @@ extension MachineSession {
         case .debian, .raspios, .arch: LinuxSession(machine: machine)
         case .windows: WindowsSession(machine: machine)
         case .macos: MacSession(machine: machine)
+        case .opnsense: OPNsenseSession(machine: machine)
         }
     }
 }

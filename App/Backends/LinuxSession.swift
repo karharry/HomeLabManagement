@@ -4,7 +4,7 @@ import Foundation
 /// (Kind-specific extras — Pi-hole, PiKVM, Tailscale, Raspberry Pi telemetry, Arch/apt update
 /// handling — belong to a later phase; this covers the shared core: host/CPU/mem/storage/services/processes.)
 @MainActor @Observable
-final class LinuxSession: MachineSession, ContainerHosting, ConsoleHosting, UserHosting, LogHosting, UpdateHosting, TailscaleHosting, WireGuardHosting {
+final class LinuxSession: MachineSession, CPUHosting, GPUHosting, ContainerHosting, ConsoleHosting, UserHosting, LogHosting, UpdateHosting, TailscaleHosting, WireGuardHosting {
     private let runner = SSHRunner()
     private var prevCPU: (busy: Double, total: Double)?
     private var prevNet: (rx: Double, tx: Double, time: Date)?
@@ -17,22 +17,47 @@ final class LinuxSession: MachineSession, ContainerHosting, ConsoleHosting, User
     private(set) var hasRaspberryPi = false
     private(set) var hasWireGuard = false
     private(set) var hasProtonVPNCLI = false
+    private(set) var hasNvidia = false
+    private(set) var hasLibvirt = false
+
+    // CPU / GPU pages (shared with Windows)
+    var cpuInfo = WinCPUInfo()
+    var cores: [CoreLoad] = []
+    var coreHistory: [String: [Double]] = [:]
+    var gpus: [GPUAdapter] = []
+    var gpuHistory: [String: GPUHistory] = [:]
+    var gpuProcesses: [GPUProcess] = []   // no per-process GPU query on Linux
+    private var prevCores: [String: (busy: Double, total: Double)] = [:]
+
+    // Power (Intel RAPL + NVIDIA board power), sampled every ~10 s because RAPL needs sudo
+    private var rapl = RAPLSampler()
+    private var lastPowerSample = Date.distantPast
+    private var powerUnavailable = false
+
+    // libvirt VMs
+    var vms: [LinuxVM] = []
+    var vmsError: String?
+    private var vmsTask: Task<Void, Never>?
+
+    // Pi-hole v6 API (used when a web password is set) + Local DNS
+    private var piholeClient: PiholeClient?
+    var localDNSRecords: [PiholeDNSRecord] = []
+    var localDNSError: String?
     var protonStatus: String?
     var protonBusy = false
 
     override var navItems: [NavItem] {
-        var items = machine.kind.navItems
-        if let i = items.firstIndex(of: .alerts) {
-            var extra: [NavItem] = []
-            if hasDocker { extra.append(.containers) }
-            if hasPihole { extra.append(.pihole) }
-            if hasPiKVM { extra.append(.pikvm) }
-            if hasTailscale { extra.append(.tailscale) }
-            if hasRaspberryPi { extra.append(.raspberryPi) }
-            if hasWireGuard || hasProtonVPNCLI { extra.append(.vpn) }
-            items.insert(contentsOf: extra, at: i)
-        }
-        return items
+        var items = Set(machine.kind.navItems)
+        items.insert(.cpu)
+        if hasNvidia { items.insert(.gpu) }
+        if hasDocker { items.insert(.containers) }
+        if hasPihole { items.formUnion([.pihole, .localDNS]) }
+        if hasPiKVM { items.insert(.pikvm) }
+        if hasTailscale { items.insert(.tailscale) }
+        if hasRaspberryPi { items.insert(.raspberryPi) }
+        if hasWireGuard || hasProtonVPNCLI { items.insert(.vpn) }
+        if hasLibvirt { items.insert(.vms) }
+        return sortNavItems(items)
     }
 
     // Users / Logs / Updates / Scheduled Tasks / Raspberry Pi
@@ -107,6 +132,21 @@ final class LinuxSession: MachineSession, ContainerHosting, ConsoleHosting, User
             AlertItem(id: "svc-\($0.name)", level: .critical, title: "Service failed: \($0.name)", detail: "")
         }
 
+        let cpuName = sec["CPUINFO"]?.first ?? ""
+        let nproc = Int(hostLines[5].trimmingCharacters(in: .whitespaces)) ?? 1
+        let mhz = Double(sec["CPUINFO"]?.dropFirst().first?.trimmingCharacters(in: .whitespaces) ?? "") ?? 0
+        cpuInfo = WinCPUInfo(name: cpuName.trimmingCharacters(in: .whitespaces), cores: nproc, logical: nproc, maxMHz: mhz,
+                             virtualization: (sec["FEAT"] ?? []).contains("VTX"))
+        let coreTicks = LinuxParse.perCoreTicks(sec["STAT"] ?? [])
+        cores = coreTicks.keys.sorted { (Int($0.dropFirst(3)) ?? 0) < (Int($1.dropFirst(3)) ?? 0) }.map { name in
+            let t = coreTicks[name]!
+            var util = 0.0
+            if let p = prevCores[name], t.total > p.total { util = min(100, max(0, (t.busy - p.busy) / (t.total - p.total) * 100)) }
+            return CoreLoad(name: name, util: util, freqMHz: mhz)
+        }
+        prevCores = coreTicks
+        for c in cores { push(&coreHistory[c.id, default: []], c.util, limit: 30) }
+
         if let t = LinuxParse.cpuTicks(sec["STAT"] ?? []) {
             if let p = prevCPU, t.total > p.total { cpuPercent = min(100, max(0, (t.busy - p.busy) / (t.total - p.total) * 100)) }
             prevCPU = t
@@ -129,24 +169,165 @@ final class LinuxSession: MachineSession, ContainerHosting, ConsoleHosting, User
         hasRaspberryPi = feat.contains("RASPI")
         hasWireGuard = feat.contains("WIREGUARD")
         hasProtonVPNCLI = feat.contains("PROTONVPN")
+        hasNvidia = feat.contains("NVIDIA")
+        hasLibvirt = feat.contains("LIBVIRT")
 
         state = .connected
         lastRefresh = .now
+        if hasNvidia, let t = try? await runner.sh(LinuxScripts.gpuUtil, ssh) {
+            gpuPercent = t.split(whereSeparator: \.isNewline).compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }.max()
+        }
+        if !powerUnavailable, Date.now.timeIntervalSince(lastPowerSample) > 10 {
+            lastPowerSample = .now
+            await samplePower()
+        }
         return true
     }
 
+    private func samplePower() async {
+        guard let out = try? await runner.sh(LinuxScripts.power, ssh, sudo: true, merge: true) else { return }
+        let parts = out.components(separatedBy: "---GPU---")
+        let cpu = rapl.watts(from: parts.first ?? "")
+        let gpu = parts.count > 1 ? Double(parts[1].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
+        // No counter, no GPU, or sudo refused: stop asking, so a bad sudo password isn't retried every 10 s.
+        if Double((parts.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) == nil, gpu == nil { powerUnavailable = true }
+        powerWatts = (cpu == nil && gpu == nil) ? nil : (cpu ?? 0) + (gpu ?? 0)
+    }
+
+    func refreshGPUDetail() async {
+        guard let t = try? await runner.sh(LinuxScripts.gpuDetail, ssh) else { return }
+        let info = NVInfo.parse(t)
+        gpus = info.enumerated().map { i, n in
+            GPUAdapter(id: "\(i)|\(n.name)", name: n.name, vramTotal: n.memTotal, vramUsed: n.memUsed, nvidia: n)
+        }
+        for g in gpus {
+            push(&gpuHistory[g.id, default: GPUHistory()].util, g.util)
+            push(&gpuHistory[g.id, default: GPUHistory()].vram, g.vramFraction.map { $0 * 100 })
+        }
+        gpuPercent = gpus.compactMap(\.util).max()
+    }
+
     override func closeBackend() async {
-        await runner.close(); prevCPU = nil; prevNet = nil
+        await runner.close(); prevCPU = nil; prevNet = nil; prevCores = [:]; rapl.reset(); powerUnavailable = false
+        vmsTask?.cancel(); piholeClient = nil
         containersTask?.cancel()
         await containerCollector.close()
     }
 
     // MARK: Pi-hole
 
+    private var piholePassword: String { MachineStore.piholePassword(for: machine.id) }
+
+    private func piholeAPI() -> PiholeClient {
+        if let c = piholeClient { return c }
+        let c = PiholeClient(host: machine.host, password: piholePassword)
+        piholeClient = c
+        return c
+    }
+
+    /// Enabled/disabled always comes from SSH (works on every version). Query stats come from `pihole -c -j` on v5,
+    /// or from the v6 REST API when a web admin password is configured (v6 removed the JSON dump).
     func refreshPihole() async {
-        guard let t = try? await runner.sh(LinuxScripts.piholeStatus, ssh) else { return }
-        piholeStatus = LinuxParse.pihole(t)
-        piholeError = piholeStatus == nil ? "Couldn't read Pi-hole stats (pihole -c -j)." : nil
+        var status = (try? await runner.sh(LinuxScripts.piholeStatus, ssh)).flatMap(LinuxParse.pihole)
+        if !piholePassword.isEmpty {
+            do {
+                let api = piholeAPI()
+                let summary = try await api.get("stats/summary")
+                let q = summary["queries"] as? [String: Any] ?? [:]
+                let g = summary["gravity"] as? [String: Any] ?? [:]
+                var enabled = status?.enabled ?? true
+                if let b = try? await api.get("dns/blocking"), let v = b["blocking"] { enabled = "\(v)".lowercased() == "enabled" }
+                var s = status ?? PiholeStatus(enabled: enabled)
+                s.queriesToday = (q["total"] as? NSNumber)?.intValue ?? s.queriesToday
+                s.blockedToday = (q["blocked"] as? NSNumber)?.intValue ?? s.blockedToday
+                s.percentBlocked = (q["percent_blocked"] as? NSNumber)?.doubleValue ?? s.percentBlocked
+                s.domainsOnBlocklist = (g["domains_being_blocked"] as? NSNumber)?.intValue ?? s.domainsOnBlocklist
+                status = s
+                piholeError = nil
+            } catch { piholeError = error.localizedDescription }
+        } else {
+            piholeError = status == nil ? "Couldn't read Pi-hole stats over SSH. If this is Pi-hole v6, add its web admin password in the Edit sheet — v6 needs the API for stats." : nil
+        }
+        piholeStatus = status
+    }
+
+    // MARK: Pi-hole Local DNS (v5: /etc/pihole/custom.list over SSH; v6: config/dns/hosts API when a password is set)
+
+    private func piholeHosts() async throws -> [String] {
+        let data = try await piholeAPI().get("config/dns/hosts")
+        for path in [["config", "dns", "hosts"], ["dns", "hosts"], ["hosts"]] {
+            var node: Any? = data
+            for key in path { node = (node as? [String: Any])?[key] }
+            if let list = node as? [Any] { return list.map { "\($0)" } }
+        }
+        return []
+    }
+
+    func refreshLocalDNS() async {
+        if !piholePassword.isEmpty {
+            do { localDNSRecords = LinuxParse.localDNS(try await piholeHosts().joined(separator: "\n")); localDNSError = nil }
+            catch { localDNSError = error.localizedDescription }
+            return
+        }
+        do { localDNSRecords = LinuxParse.localDNS(try await runner.sh("cat /etc/pihole/custom.list 2>/dev/null", ssh, sudo: true, merge: true)); localDNSError = nil }
+        catch { localDNSError = error.localizedDescription }
+    }
+
+    /// Returns an error message, or nil on success.
+    func addLocalDNS(domain: String, ip: String) async -> String? {
+        let d = domain.trimmingCharacters(in: .whitespaces), i = ip.trimmingCharacters(in: .whitespaces)
+        guard !d.isEmpty, !i.isEmpty else { return "Enter both a domain and an IP address." }
+        if !piholePassword.isEmpty {
+            do {
+                var hosts = try await piholeHosts().filter { !$0.hasSuffix(" \(d)") }
+                hosts.append("\(i) \(d)")
+                try await piholeAPI().patch("config", ["config": ["dns": ["hosts": hosts]]])
+            } catch { return error.localizedDescription }
+        } else {
+            let out = (try? await runner.sh("pihole -a hostrecord \(SSHRunner.quote(d)) \(SSHRunner.quote(i))", ssh, sudo: true, merge: true)) ?? "Failed to run pihole."
+            if out.lowercased().contains("error") { return out }
+        }
+        await refreshLocalDNS()
+        return nil
+    }
+
+    func removeLocalDNS(_ r: PiholeDNSRecord) async -> String? {
+        if !piholePassword.isEmpty {
+            do {
+                let hosts = try await piholeHosts().filter { !$0.hasSuffix(" \(r.domain)") }
+                try await piholeAPI().patch("config", ["config": ["dns": ["hosts": hosts]]])
+            } catch { return error.localizedDescription }
+        } else {
+            let out = (try? await runner.sh("pihole -a hostrecord \(SSHRunner.quote(r.domain))", ssh, sudo: true, merge: true)) ?? "Failed to run pihole."
+            if out.lowercased().contains("error") { return out }
+        }
+        await refreshLocalDNS()
+        return nil
+    }
+
+    // MARK: VMs (libvirt/QEMU)
+
+    func setVMsActive(_ active: Bool) {
+        vmsTask?.cancel(); vmsTask = nil
+        guard active, hasLibvirt else { return }
+        vmsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.loadVMs()
+                try? await Task.sleep(for: .seconds(10))
+            }
+        }
+    }
+
+    func loadVMs() async {
+        do { vms = LinuxParse.vms(try await runner.sh(LinuxScripts.vms, ssh, sudo: true, merge: true)); vmsError = nil }
+        catch { vmsError = error.localizedDescription }
+    }
+
+    func vmAction(_ v: LinuxVM, action: String) async {
+        let verb = ["start": "start", "restart": "reboot", "stop": "shutdown", "poweroff": "destroy"][action] ?? action
+        _ = try? await runner.sh("virsh -c qemu:///system \(verb) \(SSHRunner.quote(v.name))", ssh, sudo: true, merge: true)
+        try? await Task.sleep(for: .seconds(2))
+        await loadVMs()
     }
 
     func piholeSetEnabled(_ enabled: Bool, duration: String? = nil) async {
@@ -377,8 +558,11 @@ private enum LinuxScripts {
     uname -m
     cut -d' ' -f1 /proc/uptime
     nproc
+    echo '##CPUINFO'
+    awk -F': ' '/^model name/{print $2; exit}' /proc/cpuinfo
+    awk -F': ' '/^cpu MHz/{print $2; exit}' /proc/cpuinfo
     echo '##STAT'
-    head -1 /proc/stat
+    grep '^cpu' /proc/stat
     echo '##MEM'
     cat /proc/meminfo
     echo '##NET'
@@ -397,7 +581,35 @@ private enum LinuxScripts {
     command -v vcgencmd >/dev/null 2>&1 && echo RASPI
     command -v wg >/dev/null 2>&1 && echo WIREGUARD
     command -v protonvpn-cli >/dev/null 2>&1 && echo PROTONVPN
+    command -v nvidia-smi >/dev/null 2>&1 && echo NVIDIA
+    command -v virsh >/dev/null 2>&1 && echo LIBVIRT
+    grep -qE 'vmx|svm' /proc/cpuinfo 2>/dev/null && echo VTX
     echo '##END'
+    """
+
+    static let gpuUtil = "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null"
+
+    static let gpuDetail = """
+    nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw,power.limit,fan.speed,clocks.gr,clocks.max.gr,clocks.mem,clocks.max.mem,driver_version,pstate --format=csv,noheader,nounits 2>/dev/null
+    """
+
+    static let power = RAPLSampler.script + """
+
+    echo '---GPU---'
+    nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits 2>/dev/null | head -1
+    """
+
+    /// virsh needs root for the system-wide qemu:///system connection most KVM hosts use.
+    static let vms = """
+    for vm in $(virsh -c qemu:///system list --all --name 2>/dev/null); do
+      [ -z "$vm" ] && continue
+      info="$(virsh -c qemu:///system dominfo "$vm" 2>/dev/null)"
+      state=$(echo "$info" | awk -F': +' '/^State:/{print $2}')
+      autostart=$(echo "$info" | awk -F': +' '/^Autostart:/{print $2}')
+      vcpus=$(echo "$info" | awk -F': +' '/^CPU\\(s\\):/{print $2}')
+      maxmem=$(echo "$info" | awk -F': +' '/^Max memory:/{print $2}')
+      echo "VM|$vm|$state|$autostart|$vcpus|$maxmem"
+    done
     """
 
     static let processes = """
@@ -438,10 +650,10 @@ private enum LinuxScripts {
     """
 }
 
-private struct LinuxHost { var hostname = ""; var os = ""; var uptime: TimeInterval = 0 }
-private struct LinuxMem { var total = 0.0; var used = 0.0 }
-private struct LinuxFS { var device: String; var size: Int64; var used: Int64; var mount: String }
-private struct LinuxZPool { var name: String; var size: Int64; var allocated: Int64; var health: String }
+struct LinuxHost { var hostname = ""; var os = ""; var uptime: TimeInterval = 0 }
+struct LinuxMem { var total = 0.0; var used = 0.0 }
+struct LinuxFS { var device: String; var size: Int64; var used: Int64; var mount: String }
+struct LinuxZPool { var name: String; var size: Int64; var allocated: Int64; var health: String }
 
 struct PiholeStatus: Sendable {
     var enabled: Bool
@@ -452,7 +664,59 @@ struct PiholeStatus: Sendable {
 }
 
 
-private enum LinuxParse {
+struct PiholeDNSRecord: Sendable, Identifiable, Hashable {
+    var ip: String
+    var domain: String
+    var id: String { domain }
+}
+
+struct LinuxVM: Sendable, Identifiable, Hashable {
+    var name: String
+    var state: String
+    var autostart: Bool
+    var vcpus: Int
+    var memoryMiB: Int?
+    var id: String { name }
+    var isRunning: Bool { state == "running" }
+}
+
+enum LinuxParse {
+    /// /proc/stat lines like "cpu0 103 0 55 …" (the aggregate "cpu " line is handled by `cpuTicks`).
+    static func perCoreTicks(_ l: [String]) -> [String: (busy: Double, total: Double)] {
+        var out: [String: (busy: Double, total: Double)] = [:]
+        for line in l {
+            let f = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard let name = f.first, name.hasPrefix("cpu"), name != "cpu", name.dropFirst(3).allSatisfy(\.isNumber) else { continue }
+            let n = f.dropFirst().compactMap { Double($0) }
+            guard n.count >= 4 else { continue }
+            let idle = n[3] + (n.count > 4 ? n[4] : 0)
+            let total = n.prefix(8).reduce(0, +)
+            out[String(name)] = (total - idle, total)
+        }
+        return out
+    }
+
+    /// One "IP domain" pair per line, '#' comments allowed.
+    static func localDNS(_ text: String) -> [PiholeDNSRecord] {
+        text.split(separator: "\n").compactMap { raw in
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            let p = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard !line.hasPrefix("#"), p.count >= 2 else { return nil }
+            return PiholeDNSRecord(ip: String(p[0]), domain: String(p[1]))
+        }.sorted { $0.domain.localizedCaseInsensitiveCompare($1.domain) == .orderedAscending }
+    }
+
+    static func vms(_ text: String) -> [LinuxVM] {
+        text.split(separator: "\n").compactMap { raw in
+            let p = raw.components(separatedBy: "|")
+            guard p.count >= 6, p[0] == "VM" else { return nil }
+            let kib = Int(p[5].filter(\.isNumber))   // dominfo reports KiB
+            return LinuxVM(name: p[1].trimmingCharacters(in: .whitespaces), state: p[2].trimmingCharacters(in: .whitespaces).lowercased(),
+                           autostart: ["enable", "yes"].contains(p[3].trimmingCharacters(in: .whitespaces).lowercased()),
+                           vcpus: Int(p[4].trimmingCharacters(in: .whitespaces)) ?? 1, memoryMiB: kib.map { $0 / 1024 })
+        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     static func sections(_ text: String) -> [String: [String]] {
         var out: [String: [String]] = [:]
         var current: String?
