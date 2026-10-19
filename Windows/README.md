@@ -1,6 +1,6 @@
 # HomeLab Management — Windows
 
-A PySide6 (Qt) port of the macOS app in the repo root, built independently per
+A PySide6 (Qt) port of the macOS app (now in [HomeLabManagement-Mac](https://github.com/karharry/HomeLabManagement-Mac)), built independently per
 platform but covering the same machine kinds and pages. See the
 [top-level README](../README.md) for the feature list and installation
 instructions — this file covers the Windows build specifically.
