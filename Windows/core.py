@@ -564,7 +564,9 @@ class Fmt:
         return ("-" + s) if neg else s
 
     @staticmethod
-    def uptime(seconds: float) -> str:
+    def uptime(seconds: Optional[float]) -> str:
+        if seconds is None:
+            return "–"
         s = int(seconds)
         d, rem = divmod(s, 86400)
         h, m = divmod(rem, 3600)

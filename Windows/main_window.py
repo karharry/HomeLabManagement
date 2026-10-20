@@ -226,6 +226,7 @@ class MainWindow(QMainWindow):
         return f"{dot} {s.display_name}"
 
     def _nav_label(self, s, nav: NavItem) -> str:
+        nav = NavItem(nav)  # Qt item data hands back a plain str, not the enum
         if nav == NavItem.alerts and s.alerts:
             return f"{nav.value} ({len(s.alerts)})"
         return nav.value
@@ -253,7 +254,7 @@ class MainWindow(QMainWindow):
             item.setExpanded(True)
         elif kind == "nav":
             machine_id = item.data(0, ROLE_MACHINE_ID)
-            nav = item.data(0, ROLE_NAV)
+            nav = NavItem(item.data(0, ROLE_NAV))
             self._show_machine(machine_id, nav)
 
     def _context_menu(self, pos):
